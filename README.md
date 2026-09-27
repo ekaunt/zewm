@@ -8,6 +8,7 @@ zewm is a personal fork of [newm-next](https://github.com/newm-next/newm-next). 
 | `newm-cmd`, `newmctl` | `zewm-cmd`, `zewmctl` |
 | `newm-panel-basic` | `zewm-panel-basic` |
 | `~/.config/newm/`, `/etc/newm/` | `~/.config/zewm/`, `/etc/zewm/` |
+| `~/.cache/newm/newm_log` | `~/.cache/zewm/zewm_log` |
 
 ## Changes from newm-next
 
@@ -188,7 +189,7 @@ Start newm using
 zewm -d
 ```
 
-it will log to `$HOME/.cache/newm/newm_log`, if this file exists, it will move it to `$HOME/.cache/newm/newm_log.old.$year-$month-$day-$epoch`(the timestamps of its last edit)
+it will log to `$HOME/.cache/zewm/zewm_log`, if this file exists, it will move it to `$HOME/.cache/zewm/zewm_log.old.$year-$month-$day-$epoch`(the timestamps of its last edit)
 
 you can use the `-d` flag for a more verbose, debug-y output.
 you can use the `-c` flag to point it toward a config file.

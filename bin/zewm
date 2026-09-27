@@ -8,22 +8,22 @@ done
 DIR=$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )
 
 
-LOGDIR="$HOME/.cache/newm"
+LOGDIR="$HOME/.cache/zewm"
 mkdir -p $LOGDIR || LOGDIR="/tmp"
 
-pushd  $LOGDIR
-if  [ -e newm_log ];then
-  format=$(date -r newm_log +"%Y-%m-%d-%s")
-  mv newm_log  newm_log.old.$format
+pushd "$LOGDIR" > /dev/null
+if  [ -e zewm_log ];then
+  format=$(date -r zewm_log +"%Y-%m-%d-%s")
+  mv zewm_log  zewm_log.old.$format
 
 fi
 
-popd
+popd > /dev/null
 
 args=$@
 
 export XDG_SESSION_DESKTOP="zewm"
-echo "newm-next version 0.4.2"
+echo "zewm (newm-next 0.4.2)"
 echo "script dir is $DIR"
 echo "log dir is $LOGDIR"
 if [ $# -eq 0 ]; then
@@ -32,4 +32,4 @@ else
     echo "arguments are: $@"
 fi
 
-exec $DIR/.zewm "$args" > $LOGDIR/newm_log 2>&1
+exec $DIR/.zewm "$args" > $LOGDIR/zewm_log 2>&1
