@@ -45,6 +45,18 @@ def key_bindings(layout):
     ]
 ```
 
+## Install on Arch Linux
+
+A PKGBUILD for `zewm-git` is in [pkg/arch](pkg/arch). It builds pywm-next with the wlroots fix below applied:
+
+```sh
+git clone https://github.com/ekaunt/zewm
+cd zewm/pkg/arch
+makepkg -si
+```
+
+It conflicts with the other newm packages because it installs the same Python packages.
+
 ## Building pywm-next against current libinput
 
 zewm uses upstream [pywm-next](https://github.com/newm-next/pywm-next) unchanged. Its bundled wlroots does not handle the switch types newer libinput added, so the build may fail in `backend/libinput/switch.c`. Add a `default` case to the switch-type `switch` in `handle_switch_toggle` in `subprojects/wlroots/backend/libinput/switch.c`:

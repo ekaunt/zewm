@@ -1,0 +1,82 @@
+# Maintainer: ekaunt <ekaunt@maany.cloud>
+
+_pkgname=zewm
+pkgname=zewm-git
+pkgver=r767.5530bb9
+pkgrel=1
+pkgdesc="Fork of the newm-next Wayland compositor: scaled zoom, tile preselect, pointer drag with shove/tab drops"
+arch=('x86_64')
+url="https://github.com/ekaunt/zewm"
+license=('MIT')
+depends=(
+	python
+	wayland
+	libinput
+	libxcb
+	libxkbcommon
+	opengl-driver
+	pixman
+	xcb-util-errors
+	xcb-util-renderutil
+	xcb-util-wm
+	seatd
+	xorg-xwayland
+
+	python-evdev
+	python-numpy
+	python-imageio
+
+	python-cairo
+	python-psutil
+	python-pam
+	python-pyfiglet
+	python-thefuzz
+	python-dasbus
+)
+makedepends=(
+	git
+	meson
+	ninja
+	wayland-protocols
+	xorgproto
+	python-setuptools
+)
+provides=('zewm')
+# same python packages (newm, pywm) as newm
+conflicts=('zewm' 'newm' 'newm-git' 'newm-atha-git' 'newm-next-git' 'newm-next-git-qs')
+source=(
+	'git+https://github.com/newm-next/pywm-next'
+	'git+https://github.com/ekaunt/zewm'
+	'wlroots-switch-default.patch'
+)
+sha512sums=('SKIP'
+            'SKIP'
+            '6976e92efcbcc0ad26ff6fbb268a9c34584e232de9b8b53828798681bb7db7e3c3246ce866159a96991bbc860a63923d46ef7f79ddf62b045cb7b2d880b97282')
+
+pkgver() {
+	cd "$srcdir/$_pkgname"
+	printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+	cd "$srcdir/pywm-next"
+	git submodule update --init --recursive
+	# newer libinput has switch types this wlroots doesn't handle
+	patch -d subprojects/wlroots -p1 < "$srcdir/wlroots-switch-default.patch"
+}
+
+build() {
+	cd "$srcdir/pywm-next"
+	python setup.py build
+	cd "$srcdir/$_pkgname"
+	python setup.py build
+}
+
+package() {
+	cd "$srcdir/pywm-next"
+	python setup.py install --root="$pkgdir" --optimize=1
+	cd "$srcdir/$_pkgname"
+	python setup.py install --root="$pkgdir" --optimize=1
+	install -Dm644 newm/resources/newm.desktop "$pkgdir/usr/share/wayland-sessions/zewm.desktop"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
