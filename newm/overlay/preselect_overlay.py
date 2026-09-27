@@ -15,13 +15,15 @@ MOVES = {
     'k': (0, -1), 'Up': (0, -1),
     'j': (0, 1), 'Down': (0, 1),
 }
-CONFIRM = ('Return', 'KP_Enter', 'space', 'a')
+CONFIRM = ('Return', 'KP_Enter', 'space')
+# Escape, or pressing the Super+A binding again, cancels
+CANCEL = ('Escape', 'a')
 
 
 class PreselectOverlay(Overlay):
     """
     Pick the free tile where the next new window opens: hjkl/arrows jump to the next free tile, mouse hovers free tiles,
-    Return/Space/click confirm, Escape clears the preselection.
+    Return/Space/click confirm, Escape or A clears the preselection.
     """
     def __init__(self, layout: Layout) -> None:
         super().__init__(layout)
@@ -72,7 +74,7 @@ class PreselectOverlay(Overlay):
                     break
         elif keysyms in CONFIRM:
             self.layout.exit_overlay()
-        elif keysyms == 'Escape':
+        elif keysyms in CANCEL:
             self.layout.preselect = None
             self.layout.damage()
             self.layout.exit_overlay()

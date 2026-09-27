@@ -1421,6 +1421,11 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         return x + pad, y + pad, tw * w - 2 * pad, th * h - 2 * pad
 
     def enter_preselect(self) -> None:
+        # a pending preselection on this workspace: toggle it off instead
+        if self.preselect is not None and self.preselect[0] == self.get_active_workspace()._handle:
+            self.preselect = None
+            self.damage()
+            return
         self.enter_overlay(PreselectOverlay(self))
 
     def basic_scale(self, delta_s: int) -> None:
