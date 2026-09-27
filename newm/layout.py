@@ -347,9 +347,6 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         # closing a layer surface such as rofi returns focus to it.
         self.last_regular_focus: Optional[int] = None
 
-        # view the cursor should jump to once the layout settles (focus.mouse_follows_focus)
-        self._pending_warp: Optional[View] = None
-
         # (workspace handle, i, j) of the tile the next new window opens in
         self.preselect: Optional[tuple[int, int, int]] = None
         self.preselect_borders: list[PreselectBorder] = []
@@ -670,8 +667,6 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
     def do_flush_animation(self) -> None:
         for a in self._all_animates():
             a.flush_animation()
-        # layout has reached its final state: good moment for a pending mouse_follows_focus warp
-        self._try_warp()
 
     def _animate_to(self, new_state: LayoutState, duration: float) -> None:
         for a in self._all_animates():
@@ -1443,53 +1438,26 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             self.cursor_pos = (float(pos[0]), float(pos[1]))
 
     def warp_cursor_to_focus(self, view: View) -> None:
-        """
-        mouse_follows_focus: remember view; the warp happens once the layout has settled,
-        either when the running animation finishes (do_flush_animation) or via a fallback timer
-        """
         if not conf_mouse_follows_focus() or self.overlay is not None:
             return
-        self._pending_warp = view
 
-        def fallback(tries: int) -> None:
-            if self._pending_warp is not view:
-                return
-            if not self._try_warp() and tries > 0:
-                timer = Timer(0.05, fallback, (tries - 1,))
-                timer.daemon = True
-                timer.start()
-
-        timer = Timer(max(0.1, conf_anim_t()) + 0.05, fallback, (20,))
-        timer.daemon = True
-        timer.start()
-
-    def _try_warp(self) -> bool:
-        """
-        Warp to the pending view if it has settled. Returns True when nothing is left to do
-        """
-        view = getattr(self, '_pending_warp', None)
-        if view is None:
-            return True
-        try:
-            if not view.is_focused() or view.up_state is None or self.overlay is not None:
-                self._pending_warp = None
-                return True
-            vs = self.state.get_view_state(view)
-            if vs.scale_origin is not None or vs.move_origin is not None:
-                return False  # new window still growing in
-            x, y, w, h = view.reducer(view.up_state, self.state).logical_box
-            if w <= 0 or h <= 0:
-                return False
-            self._pending_warp = None
-            cx, cy = self.cursor_pos
-            if not (x <= cx < x + w and y <= cy < y + h):
+        def warp() -> None:
+            # runs once the focus animation (viewport pan) has settled
+            try:
+                if not view.is_focused() or view.up_state is None:
+                    return
+                x, y, w, h = view.reducer(view.up_state, self.state).logical_box
+                cx, cy = self.cursor_pos
+                if w <= 0 or h <= 0 or (x <= cx < x + w and y <= cy < y + h):
+                    return
                 self.update_cursor(True, (int(x + w / 2), int(y + h / 2)))
                 self.damage()
-            return True
-        except Exception:
-            logger.exception("mouse_follows_focus")
-            self._pending_warp = None
-            return True
+            except Exception:
+                logger.exception("warp_cursor_to_focus")
+
+        timer = Timer(max(0.1, conf_anim_t()) + 0.02, warp)
+        timer.daemon = True
+        timer.start()
 
     def enter_preselect(self) -> None:
         # a pending preselection on this workspace: toggle it off instead
@@ -1517,8 +1485,6 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
     def focus_view(self, view: View) -> None:
         def reducer(state: LayoutState) -> tuple[Optional[LayoutState], LayoutState]:
             view.focus()
-            # also when view already had focus (no focus-change event, but the view may pan)
-            self.warp_cursor_to_focus(view)
             return None, state.focusing_view(view)
 
         self.animate_to(reducer, conf_anim_t())
