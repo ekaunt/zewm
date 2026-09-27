@@ -1188,6 +1188,7 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
         if self.is_focused():
             self.wm.focus_hint(self)
             self.wm.focus_borders.update_focus(self)
+            self.wm.warp_cursor_to_focus(self)
         if self._ssd is not None:
             self._ssd.damage()
         if self._background is not None:

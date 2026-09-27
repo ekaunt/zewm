@@ -6,7 +6,7 @@ import math
 import logging
 import os
 from itertools import product
-from threading import Thread
+from threading import Thread, Timer
 
 from pywm import (
     PyWM,
@@ -54,6 +54,8 @@ conf_view_padding = configured_value("view.padding", 6)
 conf_move_swap = configured_value("move.swap", False)
 # resize_focused_view pushes the windows a growing edge runs into instead of overlapping them
 conf_resize_shove = configured_value("resize.shove", False)
+# warp the cursor to the center of a newly focused window (unless it is already over it)
+conf_mouse_follows_focus = configured_value("focus.mouse_follows_focus", False)
 
 if TYPE_CHECKING:
     TKeyBindings = Callable[[Layout], list[tuple[str, Callable[[], None]]]]
@@ -1419,6 +1421,28 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         y = ws.pos_y + ws_state.top_excluded + (j - ws_state.j) * h
         pad = conf_view_padding() / max(1, ws_state.size / 2.)
         return x + pad, y + pad, tw * w - 2 * pad, th * h - 2 * pad
+
+    def warp_cursor_to_focus(self, view: View) -> None:
+        if not conf_mouse_follows_focus() or self.overlay is not None:
+            return
+
+        def warp() -> None:
+            # runs once the focus animation (viewport pan) has settled
+            try:
+                if not view.is_focused() or view.up_state is None:
+                    return
+                x, y, w, h = view.reducer(view.up_state, self.state).logical_box
+                cx, cy = self.cursor_pos
+                if w <= 0 or h <= 0 or (x <= cx < x + w and y <= cy < y + h):
+                    return
+                self.update_cursor(True, (int(x + w / 2), int(y + h / 2)))
+                self.damage()
+            except Exception:
+                logger.exception("warp_cursor_to_focus")
+
+        timer = Timer(max(0.1, conf_anim_t()) + 0.02, warp)
+        timer.daemon = True
+        timer.start()
 
     def enter_preselect(self) -> None:
         # a pending preselection on this workspace: toggle it off instead

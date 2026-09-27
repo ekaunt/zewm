@@ -30,6 +30,10 @@ All new behavior is behind config keys and off by default, except where noted.
 - **Keyboard move swaps** (`move.swap`). `move_focused_view` trades places with the windows in the way instead of stacking onto them.
 - **Keyboard resize shoves** (`resize.shove`). `resize_focused_view` pushes the windows a growing edge runs into instead of overlapping them. This also fixes stack indices being validated against the pre-resize state.
 
+### Focus
+
+- **Mouse follows focus** (`focus.mouse_follows_focus`). When focus changes, for example by keyboard, the cursor moves to the center of the newly focused window once the view has settled. It stays put if it is already over that window.
+
 ### Example
 
 ```python
@@ -37,6 +41,7 @@ view = {'scale_content_on_zoom': 2}
 move_resize = {'gesture_factor': 1, 'follow_cursor': True}
 move = {'grid_m': 1, 'swap': True}
 resize = {'shove': True}
+focus = {'mouse_follows_focus': True}
 swipe_zoom = {'gesture_factor': -4}  # flip 4-finger zoom direction
 
 def key_bindings(layout):
