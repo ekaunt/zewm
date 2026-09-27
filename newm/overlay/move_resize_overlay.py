@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Optional
 
 from threading import Thread
 import time
+import math
 import logging
 
 from pywm import PYWM_PRESSED, PyWMModifiers
@@ -38,6 +39,8 @@ conf_gesture_binding_move_resize = configured_value("gesture_bindings.move_resiz
 conf_follow_cursor = configured_value("move_resize.follow_cursor", False)
 # fraction of a window's width/height counted as its edge when dropping onto it
 conf_shove_edge = configured_value("move_resize.shove_edge", 0.25)
+# duration of the shove preview slide and the drop snap, independent of anim_time
+conf_drag_anim_t = configured_value("move_resize.anim_time", 0.2)
 conf_c_scale = configured_value('gestures.c.scale_px', 800.)
 
 class _Overlay:
@@ -392,12 +395,14 @@ class CursorMoveOverlay(_Overlay):
     def _targets(self) -> dict[int, tuple[float, float]]:
         return {h: self.shoves.get(h, (b[0], b[1])) for h, b in self.orig.items()}  # type: ignore
 
-    def tick(self) -> None:
+    def tick(self) -> bool:
         """
-        Live preview: ease the other views toward where the current drop would put them
+        Live preview: ease the other views toward where the current drop would put them.
+        Returns whether any view is still moving
         """
         t = time.time()
-        k = min(1., (t - self._last_tick) / max(0.01, conf_anim_t()) * 3.)
+        # exponential ease, ~95% of the way there after drag anim_time
+        k = 1. - math.exp(-3. * (t - self._last_tick) / max(0.01, conf_drag_anim_t()))
         self._last_tick = t
 
         moved = False
@@ -418,6 +423,7 @@ class CursorMoveOverlay(_Overlay):
             moved = True
         if moved:
             self.layout.damage()
+        return moved
 
     def close(self) -> tuple[Workspace, float, float, float, float, float, float, float, float, float]:
         self.layout.drop_hint = None
@@ -425,7 +431,7 @@ class CursorMoveOverlay(_Overlay):
         # every other view gets an explicit final position (shoved or restored) for the exit animation
         self.shoves = self._targets()  # type: ignore
         fi, fj, fw, fh = self.drop
-        return self.workspace, self.i, self.j, self.w, self.h, fi, fj, fw, fh, conf_anim_t()
+        return self.workspace, self.i, self.j, self.w, self.h, fi, fj, fw, fh, conf_drag_anim_t()
 
 
 class MoveResizeOverlay(Overlay, Thread):
@@ -468,6 +474,8 @@ class MoveResizeOverlay(Overlay, Thread):
         # views pushed aside by a CursorMoveOverlay drop, applied on exit
         self._shoves: dict[int, tuple[int, int]] = {}
         self._cursor_final: Optional[tuple[float, float]] = None
+        # dropped CursorMoveOverlay whose shoved views are still sliding into place
+        self._easing: Optional[CursorMoveOverlay] = None
 
         self._running = True
         self._wants_close = False
@@ -481,9 +489,12 @@ class MoveResizeOverlay(Overlay, Thread):
             t = time.time()
 
             in_prog = False
-            ovr = self.overlay
-            if isinstance(ovr, CursorMoveOverlay):
-                ovr.tick()
+            ovr = self.overlay if isinstance(self.overlay, CursorMoveOverlay) else self._easing
+            if ovr is not None:
+                if ovr.tick():
+                    in_prog = True
+                elif ovr is self._easing:
+                    self._easing = None
 
             if self._target_view_pos is not None:
                 in_prog = True
@@ -612,6 +623,7 @@ class MoveResizeOverlay(Overlay, Thread):
             if isinstance(ovr, CursorMoveOverlay):
                 self._shoves = ovr.shoves
                 self._cursor_final = ovr.cursor
+                self._easing = ovr
 
             self.workspace = ws
             if ii != fi or ij != fj:
