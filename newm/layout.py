@@ -1425,6 +1425,13 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
     def warp_cursor_to_focus(self, view: View) -> None:
         if not conf_mouse_follows_focus() or self.overlay is not None:
             return
+        # Layer surfaces (rofi, launchers, notifications) and panels take focus
+        # only briefly. Warping onto them leaves the cursor over some other
+        # window when they close, and focus-follows-mouse then hands focus to
+        # that window instead of the one the user came from (so e.g. rofimoji
+        # types into the wrong window).
+        if view.role == "layer" or view.is_panel():
+            return
 
         def warp(tries: int) -> None:
             # runs once the focus animation (viewport pan, or a new window growing in) has settled
