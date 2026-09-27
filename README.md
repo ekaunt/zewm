@@ -32,7 +32,7 @@ All new behavior is behind config keys and off by default, except where noted.
 
 ### Focus
 
-- **Mouse follows focus** (`focus.mouse_follows_focus`). When focus changes, for example by keyboard, the cursor moves to the center of the newly focused window once the view has settled. It stays put if it is already over that window.
+- **Mouse follows focus** (`focus.mouse_follows_focus`). When focus changes, by keyboard or because a new window opened, the cursor moves to the center of the newly focused window once the view has settled. It stays put if it is already over that window.
 
 ### Example
 

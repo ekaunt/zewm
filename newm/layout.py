@@ -1426,12 +1426,21 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         if not conf_mouse_follows_focus() or self.overlay is not None:
             return
 
-        def warp() -> None:
-            # runs once the focus animation (viewport pan) has settled
+        def warp(tries: int) -> None:
+            # runs once the focus animation (viewport pan, or a new window growing in) has settled
             try:
                 if not view.is_focused() or view.up_state is None:
                     return
+                settling = False
+                try:
+                    vs = self.state.get_view_state(view)
+                    settling = vs.scale_origin is not None or vs.move_origin is not None
+                except Exception:
+                    pass
                 x, y, w, h = view.reducer(view.up_state, self.state).logical_box
+                if (settling or w <= 0 or h <= 0) and tries > 0:
+                    schedule(0.05, tries - 1)
+                    return
                 cx, cy = self.cursor_pos
                 if w <= 0 or h <= 0 or (x <= cx < x + w and y <= cy < y + h):
                     return
@@ -1440,9 +1449,12 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             except Exception:
                 logger.exception("warp_cursor_to_focus")
 
-        timer = Timer(max(0.1, conf_anim_t()) + 0.02, warp)
-        timer.daemon = True
-        timer.start()
+        def schedule(delay: float, tries: int) -> None:
+            timer = Timer(delay, warp, (tries,))
+            timer.daemon = True
+            timer.start()
+
+        schedule(max(0.1, conf_anim_t()) + 0.02, 20)
 
     def enter_preselect(self) -> None:
         # a pending preselection on this workspace: toggle it off instead
