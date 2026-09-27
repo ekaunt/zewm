@@ -1436,6 +1436,12 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         pad = conf_view_padding() / max(1, ws_state.size / 2.)
         return x + pad, y + pad, tw * w - 2 * pad, th * h - 2 * pad
 
+    def update_cursor(self, enabled: bool = True, pos: Optional[tuple[int, int]] = None) -> None:
+        super().update_cursor(enabled, pos)
+        # pywm only refreshes cursor_pos on real pointer motion; keep it in step with warps
+        if pos is not None:
+            self.cursor_pos = (float(pos[0]), float(pos[1]))
+
     def warp_cursor_to_focus(self, view: View) -> None:
         """
         mouse_follows_focus: remember view; the warp happens once the layout has settled,
