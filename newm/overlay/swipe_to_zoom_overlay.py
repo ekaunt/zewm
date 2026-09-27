@@ -40,6 +40,7 @@ class SwipeToZoomOverlay(Overlay):
 
         self._focused = self.layout.find_focused_view()
         self._focused_br = None
+        self._focused_center: Optional[tuple[float, float]] = None
         min_size = 1
         if self._focused is not None:
             state: Optional[ViewState] = self.layout.state.get_view_state(self._focused)
@@ -68,6 +69,8 @@ class SwipeToZoomOverlay(Overlay):
                     min_size = self.initial_size
                 if self.i + self.size > state.i + state.w - 0.1 and self.j + self.size > state.j + state.h - 0.1:
                     self._focused_br = state.i + state.w, state.j + state.h
+                # zoom around the focused view's center instead of the top-left corner
+                self._focused_center = state.i + state.w / 2., state.j + state.h / 2.
 
         """
         Grid
@@ -87,6 +90,13 @@ class SwipeToZoomOverlay(Overlay):
     def _exit_transition(self) -> tuple[Optional[LayoutState], Optional[float]]:
         size, t = self.grid.final()
         state = self.layout.state.replacing_workspace_state(self.workspace, size=size, size_origin=None)
+        if size != self.initial_size:
+            # the live gesture moved i/j; start from where the gesture began
+            start = state.replacing_workspace_state(self.workspace, i=self.i, j=self.j)
+            i, j = self.layout.zoom_position(start, self.workspace, self.initial_size, size)
+            state = state.replacing_workspace_state(self.workspace, i=i, j=j)
+        elif self._focused_center is not None:
+            state = state.replacing_workspace_state(self.workspace, i=self.i, j=self.j)
         if self._focused is not None:
             state = state.focusing_view(self._focused)
 
@@ -100,7 +110,11 @@ class SwipeToZoomOverlay(Overlay):
         self.ws_state.size = self.grid.at(self.size)
 
         # Enforce constraints real-time
-        if self._focused_br is not None:
+        if self._focused_center is not None:
+            ci, cj = self._focused_center
+            self.ws_state.i = ci - self.ws_state.size / 2.
+            self.ws_state.j = cj - self.ws_state.size / 2.
+        elif self._focused_br is not None:
             # Move bottom right corner into view
             i, j = self._focused_br
             self.ws_state.i = max(self.i, i - self.ws_state.size)

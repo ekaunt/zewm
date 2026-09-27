@@ -31,6 +31,9 @@ conf_border_ws_switch = configured_value('view.border_ws_switch', 10.)
 
 conf_rules_callback = configured_value('view.rules', lambda view: None)
 conf_floating_min_size = configured_value('view.floating_min_size', True)
+# Zoom level (ws size) past which clients stop reflowing and the compositor scales them down instead.
+# False disables; True == 1 (always scale)
+conf_scale_content_on_zoom = configured_value('view.scale_content_on_zoom', False)
 
 conf_accept_fullscreen_from_views = configured_value('view.accept_fullscreen', True)
 
@@ -627,6 +630,9 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
             w_for_size, h_for_size = self_state.w, self_state.h
 
         size = ws_state.size_origin if ws_state.size_origin is not None else ws_state.size
+        if conf_scale_content_on_zoom():
+            size = min(size, float(conf_scale_content_on_zoom()))
+            padding_for_size = padding / max(1, size / 2.)
 
         if stack_len > 1:
             w_for_size -= 0.05
@@ -711,6 +717,8 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
         size = ws_state.size
         if ws_state.size_origin is not None:
             size = ws_state.size_origin
+        if conf_scale_content_on_zoom():
+            size = min(size, float(conf_scale_content_on_zoom()))
         min_w *= size / ws.width
         min_h *= size / (ws.height - ws_state.top_excluded - ws_state.bottom_excluded)
 

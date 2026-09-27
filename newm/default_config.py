@@ -77,10 +77,10 @@ def key_bindings(layout: Layout) -> list[tuple[str, Callable[[], Any]]]:
 
 panels = {
     'lock': {
-        'cmd': 'alacritty -e newm-panel-basic lock',
+        'cmd': 'alacritty -e zewm-panel-basic lock',
     },
     'launcher': {
-        'cmd': 'alacritty -e newm-panel-basic launcher'
+        'cmd': 'alacritty -e zewm-panel-basic launcher'
     },
     'top_bar': {
         'native': {

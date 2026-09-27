@@ -21,8 +21,8 @@ all_panels: list[str] = [
 
 conf_cmds = {
     **{k: configured_value("panels.%s.cmd" % k, cast(Optional[str], None)) for k in all_panels},
-    'lock': configured_value("panels.lock.cmd", cast(Optional[str], "alacritty -e newm-panel-basic lock")),
-    'launcher': configured_value("panels.launcher.cmd", cast(Optional[str], "alacritty -e newm-panel-basic launcher")),
+    'lock': configured_value("panels.lock.cmd", cast(Optional[str], "alacritty -e zewm-panel-basic lock")),
+    'launcher': configured_value("panels.launcher.cmd", cast(Optional[str], "alacritty -e zewm-panel-basic launcher")),
 }
 
 conf_cwds = {k: configured_value("panels.%s.cwd" % k, cast(Optional[str], None)) for k in all_panels}

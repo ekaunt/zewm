@@ -75,7 +75,7 @@ source /usr/local/bin/wayland_enablement.sh #we import the environment variables
 
 sleep 0.5;
 
-start-newm
+zewm
 ```
 
 will now use this script to start newm(remember to give it execution permissions).

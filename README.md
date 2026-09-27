@@ -1,4 +1,53 @@
-# newm-next
+# zewm
+
+zewm is a personal fork of [newm-next](https://github.com/newm-next/newm-next). The Python package and code identifiers are unchanged. The commands and config location are renamed:
+
+| newm-next | zewm |
+|---|---|
+| `start-newm` | `zewm` |
+| `newm-cmd`, `newmctl` | `zewm-cmd`, `zewmctl` |
+| `newm-panel-basic` | `zewm-panel-basic` |
+| `~/.config/newm/`, `/etc/newm/` | `~/.config/zewm/`, `/etc/zewm/` |
+
+## Changes from newm-next
+
+All new behavior is behind config keys and off by default, except where noted.
+
+### Zoom
+
+- **Content scales when zoomed out** (`view.scale_content_on_zoom`). Past the given zoom level, windows stop being resized and are drawn smaller instead, so zooming out shows more desktop rather than reflowing apps. `2` keeps upstream reflow up to a 2x2 view and scales beyond it. `True` scales at every zoom level.
+- **Zoom centers on the focused window** for both the `basic_scale` keybindings and the 4-finger swipe, instead of anchoring the top-left corner. Always on.
+- **Zoom remembers the view per level.** Zooming back out returns to the position last used at that zoom level, unless the focused window would be off screen there. Always on.
+
+### Placing and moving windows
+
+- **Preselect a tile** (`layout.enter_preselect()`). A red outline marks a free tile. hjkl or the arrow keys jump between free tiles, the mouse hovers them, and Return, Space or a click confirms. The next new window opens there. Escape clears it. Look is set by `preselect.color` and `preselect.width`.
+- **Mod+drag follows the pointer** (`move_resize.follow_cursor`). The window moves 1:1 with the cursor, without lowpass lag or tile stickiness, and drops when the modifier is released. The drop target is outlined, and windows that would be shoved slide there live as a preview.
+  - Center of another window: tab onto it (matching its size).
+  - Edge of another window (`move_resize.shove_edge`, default `0.25`): take its place and push it, and anything it bumps into, toward that edge.
+  - Empty space: snap to the nearest tile.
+- **Keyboard move swaps** (`move.swap`). `move_focused_view` trades places with the windows in the way instead of stacking onto them.
+- **Keyboard resize shoves** (`resize.shove`). `resize_focused_view` pushes the windows a growing edge runs into instead of overlapping them. This also fixes stack indices being validated against the pre-resize state.
+
+### Example
+
+```python
+view = {'scale_content_on_zoom': 2}
+move_resize = {'gesture_factor': 1, 'follow_cursor': True}
+move = {'grid_m': 1, 'swap': True}
+resize = {'shove': True}
+swipe_zoom = {'gesture_factor': -4}  # flip 4-finger zoom direction
+
+def key_bindings(layout):
+    return [
+        ("L-a", lambda: layout.enter_preselect()),
+        # ...
+    ]
+```
+
+---
+
+# newm-next (upstream README)
 
 ## Annoucment
 
@@ -76,7 +125,7 @@ flakes are probably the easiest way to do this.
 
 ```sh
 nix build "github:newm-next/newm-next#newm-next"
-./result/bin/start-newm -d
+./result/bin/zewm -d
 ```
 
 Note that this probably does not work outside nixOS. To fix OpenGL issues on other
@@ -111,7 +160,7 @@ Installing newm this way means it cannot be used as a login manager, as it can o
 Start newm using
 
 ```sh
-start-newm -d
+zewm -d
 ```
 
 it will log to `$HOME/.cache/newm/newm_log`, if this file exists, it will move it to `$HOME/.cache/newm/newm_log.old.$year-$month-$day-$epoch`(the timestamps of its last edit)
@@ -123,11 +172,11 @@ you can use the `-c` flag to point it toward a config file.
 
 ### Setting up the config file and first example
 
-Configuring is handled via Python and read from either `$HOME/.config/newm/config.py` or (lower precedence) `/etc/newm/config.py`. Take `default_config.py` as a basis; details on the possible keys are provided below.
+Configuring is handled via Python and read from either `$HOME/.config/zewm/config.py` or (lower precedence) `/etc/zewm/config.py`. Take `default_config.py` as a basis; details on the possible keys are provided below.
 
 The `default_config.py` file can be found in the [repo](newm/default_config.py) or on your computer at `/usr/lib/pythonX.XX/site-packages/newm/default_config.py`
 
-Copy it to `$HOME/.config/newm/config.py` and adjust, e.g. for a German HiDPI MacBook with a wallpaper placed in the home folder,
+Copy it to `$HOME/.config/zewm/config.py` and adjust, e.g. for a German HiDPI MacBook with a wallpaper placed in the home folder,
 
 ```py
 import os
@@ -204,27 +253,27 @@ Therefore, we're stuck with the less secure (and a lot easier) way of using the 
 - [Systemd integration](./doc/systemd.md)
 - [Look and feel](./doc/look_and_feel.md)
 
-### Using newm-cmd
+### Using zewm-cmd
 
-`newm-cmd` provides a way to interact with a running newm instance from command line:
+`zewm-cmd` provides a way to interact with a running newm instance from command line:
 
-- `newm-cmd inhibit-idle` prevents newm from going into idle states (dimming the screen)
-- `newm-cmd config` reloads the configuration
-- `newm-cmd lock` locks the screen
-- `newm-cmd open-virtual-output <name>` opens a new virtual output (see [newm-sidecar](https://github.com/jbuchermn/newm-sidecar))
-- `newm-cmd close-virtual-output <name>` close a virtual output
-- `newm-cmd clean` removes orphaned states, which can happen, but shouldn't (if you encounter the need for this, please file a bug)
-- `newm-cmd debug` prints out some debug info on the current state of views
-- `newm-cmd unlock` unlocks the compositor (if explicitly enabled in config) - this is useful in case you have trouble setting up the lock screen.
+- `zewm-cmd inhibit-idle` prevents newm from going into idle states (dimming the screen)
+- `zewm-cmd config` reloads the configuration
+- `zewm-cmd lock` locks the screen
+- `zewm-cmd open-virtual-output <name>` opens a new virtual output (see [newm-sidecar](https://github.com/jbuchermn/newm-sidecar))
+- `zewm-cmd close-virtual-output <name>` close a virtual output
+- `zewm-cmd clean` removes orphaned states, which can happen, but shouldn't (if you encounter the need for this, please file a bug)
+- `zewm-cmd debug` prints out some debug info on the current state of views
+- `zewm-cmd unlock` unlocks the compositor (if explicitly enabled in config) - this is useful in case you have trouble setting up the lock screen.
 
 ### Logging straight into newm (greetd) 
 
 Make sure to install newm-next as well as pywm-next and a newm panel in a way in which the `greeter` user has access.
 
-Place newm-next configuration in `/etc/newm/config.py` and check, after logging in as `greeter`, that `start-newm` works and shows the login panel (login itself should not work). If it works, set
+Place newm-next configuration in `/etc/zewm/config.py` and check, after logging in as `greeter`, that `zewm` works and shows the login panel (login itself should not work). If it works, set
 
 ```toml
-command = "start-newm"
+command = "zewm"
 ```
 
 in `/etc/greetd/config.toml`.

@@ -30,7 +30,7 @@
     - Autoplace the first couple of windows more like i3 (i.e. resizing existing windows / tiling)
     - Scale windows moving others "out of the way"
 
-** rofi / dmenu app-switcher via newm-cmd
+** rofi / dmenu app-switcher via zewm-cmd
 ** scratchpad
 ** dbus endpoint for waybar etc
 ** Support swaylock

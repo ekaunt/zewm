@@ -31,7 +31,7 @@ from .dbus import DBusEndpoint, DBusGestureProvider
 from .panel_launcher import PanelsLauncher
 from .auth_backend import AuthBackend
 
-from .widget import TopBar, BottomBar, Background, Corner, FocusBorders
+from .widget import TopBar, BottomBar, Background, Corner, FocusBorders, PreselectBorder
 from .overlay import (
     Overlay,
     MoveResizeOverlay,
@@ -39,6 +39,7 @@ from .overlay import (
     SwipeOverlay,
     SwipeToZoomOverlay,
     LauncherOverlay,
+    PreselectOverlay,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,11 @@ conf_pywm = configured_value("pywm", cast(dict[str, Any], {}))
 conf_outputs = configured_value("outputs", cast(list[dict[str, Any]], []))
 
 conf_send_fullscreen_to_views = configured_value("view.send_fullscreen", True)
+conf_view_padding = configured_value("view.padding", 6)
+# move_focused_view swaps with the windows in the way instead of stacking onto them
+conf_move_swap = configured_value("move.swap", False)
+# resize_focused_view pushes the windows a growing edge runs into instead of overlapping them
+conf_resize_shove = configured_value("resize.shove", False)
 
 if TYPE_CHECKING:
     TKeyBindings = Callable[[Layout], list[tuple[str, Callable[[], None]]]]
@@ -336,6 +342,15 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
 
         self.overlay: Optional[Overlay] = None
 
+        # (workspace handle, i, j) of the tile the next new window opens in
+        self.preselect: Optional[tuple[int, int, int]] = None
+        self.preselect_borders: list[PreselectBorder] = []
+        # (workspace handle, i, j, w, h) where a window being dragged will land
+        self.drop_hint: Optional[tuple[int, float, float, float, float]] = None
+
+        # (workspace handle, zoom size) -> viewport (i, j) last used at that size
+        self._zoom_memory: dict[tuple[int, int], tuple[float, float]] = {}
+
         self.backgrounds: list[Background] = []
         self.top_bars: list[TopBar] = []
         self.bottom_bars: list[BottomBar] = []
@@ -492,6 +507,10 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             ]
 
         self.focus_borders.update()
+
+        for p in self.preselect_borders:
+            p.destroy()
+        self.preselect_borders = [self.create_widget(PreselectBorder, o) for o in self.layout]
 
         self.damage()
 
@@ -704,6 +723,13 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         - Else
             - Start at top right visible tile and move to right (alternatively traverse in spiral) to find closest unused tile
         """
+
+        if self.preselect is not None and self.preselect[0] == workspace._handle:
+            _, place_i, place_j = self.preselect
+            self.preselect = None
+            self.damage()
+            logger.debug("Using preselected placement at %d, %d", place_i, place_j)
+            return place_i, place_j
 
         place_i = 0
         place_j = 0
@@ -1351,14 +1377,60 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
 
         self.animate_to(reducer, conf_anim_t())
 
+    def zoom_position(self, state: LayoutState, ws: Workspace, old_size: int, new_size: int) -> tuple[float, float]:
+        """
+        Viewport (i, j) after zooming ws from old_size to new_size. Remembers the viewport at old_size;
+        zooming out restores the one remembered for new_size if the focused view is visible there,
+        otherwise the focused view is centered.
+        """
+        ws_state = state.get_workspace_state(ws)
+        self._zoom_memory[(ws._handle, round(old_size))] = (ws_state.i, ws_state.j)
+
+        box = None
+        view = self.find_focused_view()
+        if view is not None:
+            try:
+                view_state, _, ws_handle = state.find_view(view)
+                if ws_handle == ws._handle:
+                    box = view_state.i, view_state.j, view_state.w, view_state.h
+            except Exception:
+                logger.exception("zoom_position: could not find focused view")
+
+        remembered = self._zoom_memory.get((ws._handle, round(new_size)))
+        if remembered is not None and new_size > old_size:
+            i, j = remembered
+            if box is None or (i <= box[0] and box[0] + box[2] <= i + new_size
+                               and j <= box[1] and box[1] + box[3] <= j + new_size):
+                return remembered
+
+        if box is None:
+            return ws_state.i, ws_state.j
+        return round(box[0] + box[2] / 2. - new_size / 2.), round(box[1] + box[3] / 2. - new_size / 2.)
+
+    def tile_box(self, state: LayoutState, ws: Workspace, i: float, j: float, tw: float = 1, th: float = 1) -> tuple[float, float, float, float]:
+        """
+        Screen box of the tw x th tiles at (i, j) on ws, inset by the view padding like a tiled window
+        """
+        ws_state = state.get_workspace_state(ws)
+        h_avail = ws.height - ws_state.top_excluded - ws_state.bottom_excluded
+        w = ws.width / ws_state.size
+        h = h_avail / ws_state.size
+        x = ws.pos_x + (i - ws_state.i) * w
+        y = ws.pos_y + ws_state.top_excluded + (j - ws_state.j) * h
+        pad = conf_view_padding() / max(1, ws_state.size / 2.)
+        return x + pad, y + pad, tw * w - 2 * pad, th * h - 2 * pad
+
+    def enter_preselect(self) -> None:
+        self.enter_overlay(PreselectOverlay(self))
+
     def basic_scale(self, delta_s: int) -> None:
         ws = self.get_active_workspace()
 
         def reducer(state: LayoutState) -> tuple[Optional[LayoutState], LayoutState]:
             ws_state = state.get_workspace_state(ws)
-            return None, state.replacing_workspace_state(
-                ws, size=max(1, ws_state.size + delta_s)
-            )
+            size = max(1, ws_state.size + delta_s)
+            i, j = self.zoom_position(state, ws, ws_state.size, size)
+            return None, state.replacing_workspace_state(ws, size=size, i=i, j=j)
 
         self.animate_to(reducer, conf_anim_t())
 
@@ -1533,8 +1605,30 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
                 try:
                     s, ws_state, ws_handle = state.find_view(view)
                     ws = [w for w in self.workspaces if w._handle == ws_handle][0]
+                    ni, nj = s.i + di, s.j + dj
+
+                    ws_state = ws_state.copy()
+                    if conf_move_swap():
+                        # windows the move would land on hop over to where the focused one was
+                        in_way = [
+                            (self._views[h], o) for h, o in ws_state._view_states.items()
+                            if h != view._handle and h in self._views and o.is_tiled and o.swallowed is None
+                            and o.i < ni + s.w and ni < o.i + o.w and o.j < nj + s.h and nj < o.j + o.h
+                        ]
+                        if in_way:
+                            if di != 0:
+                                span = max(o.i + o.w for _, o in in_way) - min(o.i for _, o in in_way)
+                                ni = s.i + (span if di > 0 else -span)
+                            if dj != 0:
+                                span = max(o.j + o.h for _, o in in_way) - min(o.j for _, o in in_way)
+                                nj = s.j + (span if dj > 0 else -span)
+                            for v, o in in_way:
+                                ws_state.update_view_state(
+                                    v, i=o.i - (s.w if di > 0 else -s.w if di < 0 else 0),
+                                    j=o.j - (s.h if dj > 0 else -s.h if dj < 0 else 0))
+
                     ws_state = ws_state.replacing_view_state(
-                        view, i=s.i + di, j=s.j + dj
+                        view, i=ni, j=nj
                     ).focusing_view(view)
                     ws_state.validate_stack_indices(view)
                     return (None, state.setting_workspace_state(ws, ws_state))
@@ -1565,10 +1659,33 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
 
                     s, ws_state, ws_handle = state.find_view(view)
                     ws = [w for w in self.workspaces if w._handle == ws_handle][0]
+                    ws_state = ws_state.copy()
+
+                    if conf_resize_shove():
+                        d = (i - s.i if i < s.i else max(0, (i + w) - (s.i + s.w)),
+                             j - s.j if j < s.j else max(0, (j + h) - (s.j + s.h)))
+                        if d != (0, 0):
+                            others = {
+                                hd: o for hd, o in ws_state._view_states.items()
+                                if hd != view._handle and hd in self._views and o.is_tiled and o.swallowed is None
+                            }
+                            moved: set[int] = set()
+                            frontier = [(i, j, w, h)]
+                            while frontier:
+                                nxt = []
+                                for fi, fj, fw, fh in frontier:
+                                    for hd, o in others.items():
+                                        if hd not in moved and o.i < fi + fw and fi < o.i + o.w \
+                                                and o.j < fj + fh and fj < o.j + o.h:
+                                            moved.add(hd)
+                                            o.update(i=o.i + d[0], j=o.j + d[1])
+                                            nxt.append((o.i, o.j, o.w, o.h))
+                                frontier = nxt
+
                     ws_state = ws_state.replacing_view_state(
                         view, i=i, j=j, w=w, h=h
                     ).focusing_view(view)
-                    state.validate_stack_indices(view)
+                    ws_state.validate_stack_indices(view)
                     return (None, state.setting_workspace_state(ws, ws_state))
                 except:
                     return (None, state)

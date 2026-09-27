@@ -46,8 +46,8 @@ makepkg -sic
 
 ## Tips and tricks / Install help
 
-### `start-newm -d` core dumps as soon as it is started!
-  - **Q:** I started newm with  `start-newm -d` and it core dumped!
+### `zewm -d` core dumps as soon as it is started!
+  - **Q:** I started newm with  `zewm -d` and it core dumped!
   - **A:** try installing polkit(`pacman -S polkit`). We can't explain it, but it has fixed issues in the past.
   - **Q:** What if it still doesn't work?
   - **A:** Open a [ticket](https://github.com/newm-next/newm-next/issues) and post your log.

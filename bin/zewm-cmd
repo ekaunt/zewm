@@ -50,15 +50,15 @@ commands: dict[str, tuple[str, dict[str, str]]] = {
         ),
     "open-virtual-output": (
         "Opens a new virtual output (see newm-sidecar)",
-        {"output_name": "newm-cmd open-virtual-output <name>"},
+        {"output_name": "zewm-cmd open-virtual-output <name>"},
         ),
     "close-virtual-output": (
         "Close a virtual output",
-        {"output_name": "newm-cmd close-virtual-output <name>"},
+        {"output_name": "zewm-cmd close-virtual-output <name>"},
         ),
     "launcher": (
         "Open new app",
-        {"app": "newm-cmd launcher <app>"},
+        {"app": "zewm-cmd launcher <app>"},
         ),
 }
 
@@ -90,7 +90,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     else:
         raise NotImplementedError(
-            f"Command {args.command} does not exist, see: newm-cmd -h.",
+            f"Command {args.command} does not exist, see: zewm-cmd -h.",
         )
 
     return 0

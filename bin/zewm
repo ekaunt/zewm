@@ -32,4 +32,4 @@ else
     echo "arguments are: $@"
 fi
 
-exec $DIR/.start-newm "$args" > $LOGDIR/newm_log 2>&1
+exec $DIR/.zewm "$args" > $LOGDIR/newm_log 2>&1

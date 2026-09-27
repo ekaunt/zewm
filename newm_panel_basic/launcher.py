@@ -21,10 +21,10 @@ def _launcher() -> None:
     shortcuts: dict[int, tuple[str, str]] = {}
 
     home = os.environ['HOME'] if 'HOME' in os.environ else '/'
-    path = pathlib.Path(home) / '.config' / 'newm' / 'launcher.py'
+    path = pathlib.Path(home) / '.config' / 'zewm' / 'launcher.py'
 
     if not path.is_file():
-        path = pathlib.Path('/etc') / 'newm' / 'launcher.py'
+        path = pathlib.Path('/etc') / 'zewm' / 'launcher.py'
 
     if path.is_file():
         logger.info("Loading config at %s", path)
@@ -108,7 +108,7 @@ def _launcher() -> None:
             try:
                 cmd = shortcuts[int(search)][1]
                 logger.debug("Executing %s" % cmd)
-                os.system("newm-cmd launcher %s > /dev/null" % cmd)
+                os.system("zewm-cmd launcher %s > /dev/null" % cmd)
                 continue
             except:
                 pass
@@ -116,7 +116,7 @@ def _launcher() -> None:
             suggestions = list_suggestions(search)
             if len(suggestions) > 0:
                 logger.debug("Executing %s" % suggestions[0][1])
-                os.system("newm-cmd launcher %s > /dev/null" % suggestions[0][1])
+                os.system("zewm-cmd launcher %s > /dev/null" % suggestions[0][1])
 
 
     finally:

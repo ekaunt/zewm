@@ -96,7 +96,7 @@ class _GreetdBackend(_Backend):
             self.auth._auth_result(result["type"] == "success")
 
     def start_session(self) -> None:
-        self._send({"type": "start_session", "cmd": ["start-newm"]})
+        self._send({"type": "start_session", "cmd": ["zewm"]})
 
 
 class AuthBackend:
