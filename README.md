@@ -45,6 +45,19 @@ def key_bindings(layout):
     ]
 ```
 
+## Building pywm-next against current libinput
+
+zewm uses upstream [pywm-next](https://github.com/newm-next/pywm-next) unchanged. Its bundled wlroots does not handle the switch types newer libinput added, so the build may fail in `backend/libinput/switch.c`. Add a `default` case to the switch-type `switch` in `handle_switch_toggle` in `subprojects/wlroots/backend/libinput/switch.c`:
+
+```c
+	case LIBINPUT_SWITCH_TABLET_MODE:
+		wlr_event.switch_type = WLR_SWITCH_TYPE_TABLET_MODE;
+		break;
+	default:
+		return;
+	}
+```
+
 ---
 
 # newm-next (upstream README)
