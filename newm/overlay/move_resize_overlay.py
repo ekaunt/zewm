@@ -39,8 +39,11 @@ conf_gesture_binding_move_resize = configured_value("gesture_bindings.move_resiz
 conf_follow_cursor = configured_value("move_resize.follow_cursor", False)
 # fraction of a window's width/height counted as its edge when dropping onto it
 conf_shove_edge = configured_value("move_resize.shove_edge", 0.25)
-# duration of the shove preview slide and the drop snap, independent of anim_time
-conf_drag_anim_t = configured_value("move_resize.anim_time", 0.2)
+
+
+def _drag_anim_t() -> float:
+    # same duration as layout animations (Animation clamps anim_time to >= 0.1)
+    return max(0.1, conf_anim_t())
 conf_c_scale = configured_value('gestures.c.scale_px', 800.)
 
 class _Overlay:
@@ -317,7 +320,8 @@ class CursorMoveOverlay(_Overlay):
         self.orig: dict[int, tuple[float, float, float, float]] = {
             h: (s.i, s.j, s.w, s.h) for h, s in ws_state._view_states.items()
             if s.is_tiled and s.swallowed is None and h != self.view._handle}
-        self._last_tick = time.time()
+        # view handle -> (start i, start j, target i, target j, start time) of its preview slide
+        self._slides: dict[int, tuple[float, float, float, float, float]] = {}
 
     def _to_tile(self, x: float, y: float) -> tuple[float, float]:
         ws = self.workspace
@@ -401,9 +405,7 @@ class CursorMoveOverlay(_Overlay):
         Returns whether any view is still moving
         """
         t = time.time()
-        # exponential ease, ~95% of the way there after drag anim_time
-        k = 1. - math.exp(-3. * (t - self._last_tick) / max(0.01, conf_drag_anim_t()))
-        self._last_tick = t
+        d = _drag_anim_t()
 
         moved = False
         for h, (ti, tj) in self._targets().items():
@@ -414,13 +416,20 @@ class CursorMoveOverlay(_Overlay):
                 s = self.layout.state.get_view_state(v)
             except Exception:
                 continue
-            if abs(s.i - ti) < 0.005 and abs(s.j - tj) < 0.005:
-                if (s.i, s.j) != (ti, tj):
-                    self.layout.state.update_view_state(v, i=ti, j=tj)
-                    moved = True
-                continue
-            self.layout.state.update_view_state(v, i=s.i + (ti - s.i) * k, j=s.j + (tj - s.j) * k)
-            moved = True
+
+            # linear over anim_time like layout animations; retarget from wherever the view is now
+            slide = self._slides.get(h)
+            if slide is None or (slide[2], slide[3]) != (ti, tj):
+                if (s.i, s.j) == (ti, tj):
+                    continue
+                slide = (s.i, s.j, ti, tj, t)
+                self._slides[h] = slide
+            si, sj, _, __, t0 = slide
+            perc = min(1., (t - t0) / d)
+            ni, nj = si + (ti - si) * perc, sj + (tj - sj) * perc
+            if (s.i, s.j) != (ni, nj):
+                self.layout.state.update_view_state(v, i=ni, j=nj)
+                moved = True
         if moved:
             self.layout.damage()
         return moved
@@ -431,7 +440,7 @@ class CursorMoveOverlay(_Overlay):
         # every other view gets an explicit final position (shoved or restored) for the exit animation
         self.shoves = self._targets()  # type: ignore
         fi, fj, fw, fh = self.drop
-        return self.workspace, self.i, self.j, self.w, self.h, fi, fj, fw, fh, conf_drag_anim_t()
+        return self.workspace, self.i, self.j, self.w, self.h, fi, fj, fw, fh, _drag_anim_t()
 
 
 class MoveResizeOverlay(Overlay, Thread):
@@ -555,7 +564,7 @@ class MoveResizeOverlay(Overlay, Thread):
                     if fi != self.ws_state.i or fj != self.ws_state.j:
                         logger.debug("MoveResizeOverlay: Adjusting viewpoint (%f %f) -> (%f %f)",
                                      self.ws_state.i, self.ws_state.j, fi, fj)
-                        self._target_layout_pos = (self.ws_state.i, self.ws_state.j, fi, fj, t, t + conf_anim_t())
+                        self._target_layout_pos = (self.ws_state.i, self.ws_state.j, fi, fj, t, t + _drag_anim_t())
 
                 except Exception:
                     logger.warn("Unexpected: Could not access view %s state", self.view)

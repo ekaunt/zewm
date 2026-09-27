@@ -22,7 +22,7 @@ All new behavior is behind config keys and off by default, except where noted.
 ### Placing and moving windows
 
 - **Preselect a tile** (`layout.enter_preselect()`). A red outline marks a free tile. hjkl or the arrow keys jump between free tiles, the mouse hovers them, and Return, Space or a click confirms. The next new window opens there. Escape, or the binding again (also while the outline is pending), clears it. Look is set by `preselect.color` and `preselect.width`.
-- **Mod+drag follows the pointer** (`move_resize.follow_cursor`). The window moves 1:1 with the cursor, without lowpass lag or tile stickiness, and drops when the modifier is released. The drop target is outlined, and windows that would be shoved slide there live as a preview. The preview slide and the drop snap take `move_resize.anim_time` (default `0.2`), separate from `anim_time`.
+- **Mod+drag follows the pointer** (`move_resize.follow_cursor`). The window moves 1:1 with the cursor, without lowpass lag or tile stickiness, and drops when the modifier is released. The drop target is outlined, and windows that would be shoved slide there live as a preview. The preview slide and the drop use the same linear `anim_time` timing as other layout animations.
   - Center of another window: tab onto it (matching its size).
   - Edge of another window (`move_resize.shove_edge`, default `0.25`): take its place and push it, and anything it bumps into, toward that edge.
   - Empty space: snap to the nearest tile.
