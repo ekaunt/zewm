@@ -22,7 +22,7 @@ popd
 
 args=$@
 
-export XDG_SESSION_DESKTOP="newm-next"
+export XDG_SESSION_DESKTOP="zewm"
 echo "newm-next version 0.4.2"
 echo "script dir is $DIR"
 echo "log dir is $LOGDIR"

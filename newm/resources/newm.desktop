@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=newm-next
-Comment=A touchpad and touchscreen focused wayland compositor
+Name=zewm
+Comment=newm-next fork: a touchpad and touchscreen focused wayland compositor
 Exec=zewm
 Type=Application
