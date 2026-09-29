@@ -262,6 +262,8 @@ class Background(PyWMBackgroundWidget, Animatable):
 conf_tron_grid_color = configured_value('background.tron.grid_color', '#18cae6')
 conf_tron_accent_color = configured_value('background.tron.accent_color', '#ff7a18')
 conf_tron_speed = configured_value('background.tron.speed', 0.6)
+# Seconds the parallax layers take to catch up after a move (glide)
+conf_tron_glide = configured_value('background.tron.glide', 0.35)
 
 TronGridState = tuple[float, float, float, float, float]
 
@@ -288,6 +290,10 @@ class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
         self._workspace: Workspace = workspace
         self._anchor: tuple[float, float] = (0., 0.)
         self._last_params: Optional[list[float]] = None
+        # Smoothed camera (centre x, centre y, tiles across) and its velocity
+        self._cam: Optional[tuple[float, float, float]] = None
+        self._vel: tuple[float, float] = (0., 0.)
+        self._cam_t: float = 0.
 
     def _grid(self, state: LayoutState) -> TronGridState:
         """(tile w, tile h, x of tile 0, y of tile 0, opacity) in output coordinates"""
@@ -315,12 +321,32 @@ class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
         if abs(cx - self._anchor[0]) > 2 or abs(cy - self._anchor[1]) > 2:
             self._anchor = (float(round(cx)), float(round(cy)))
 
+        # Parallax camera eases toward the real one: the layers keep sliding after a move
+        target = (cx, cy, self._output.width / tw)
+        t = time.time()
+        if self._cam is None:
+            self._cam = target
+        else:
+            dt = min(max(t - self._cam_t, 0.), 0.1)
+            k = 1. - math.exp(-dt / max(conf_tron_glide(), 1e-3))
+            cam = tuple(c + (g - c) * k for c, g in zip(self._cam, target))
+            if dt > 0:
+                self._vel = ((cam[0] - self._cam[0]) / dt, (cam[1] - self._cam[1]) / dt)
+            self._cam = cast(tuple[float, float, float], cam)
+            if max(abs(g - c) for c, g in zip(self._cam, target)) > 1e-3:
+                self.damage()
+            else:
+                self._cam = target
+                self._vel = (0., 0.)
+        self._cam_t = t
+
         s = self._output.scale
         params = [tw * s, th * s, ox * s, oy * s,
                   *parse_color(conf_tron_grid_color())[:3],
                   *parse_color(conf_tron_accent_color())[:3],
                   *self._anchor,
-                  float(conf_tron_speed())]
+                  float(conf_tron_speed()),
+                  *self._cam, *self._vel]
         if params != self._last_params:
             self._last_params = params
             self.set_primitive("tron_grid", [], params)
