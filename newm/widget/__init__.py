@@ -1,5 +1,5 @@
 from .bar import TopBar, BottomBar
-from .background import Background
+from .background import Background, TronBackground
 from .corner import Corner
 from .focus_border import FocusBorders
 from .preselect_border import PreselectBorder

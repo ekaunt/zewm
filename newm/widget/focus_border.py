@@ -13,7 +13,7 @@ from pywm import PyWMWidget, PyWMWidgetDownstreamState, PyWMOutput, DamageTracke
 from ..animate import Animate, Animatable
 from ..interpolation import WidgetDownstreamInterpolation
 from ..config import configured_value
-from ..util import get_border_color
+from ..util import get_border_color, parse_color
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,19 @@ conf_color = configured_value('focus.color', '#19CEEB55')
 conf_gradient_primary = configured_value('focus.gradient.primary', '')
 conf_gradient_secondary = configured_value('focus.gradient.secondary', '')
 conf_gradient_angle = configured_value('focus.gradient.angle', 0)
+
+# 'tron': glowing line with two light streaks racing around it (tron_border shader).
+# focus.distance is then the gap from the window edge to the centre of the line.
+conf_style = configured_value('focus.style', 'solid')
+conf_tron_accent = configured_value('focus.tron.accent_color', '#ff7a18')
+conf_tron_glow = configured_value('focus.tron.glow', 6.)
+conf_tron_speed = configured_value('focus.tron.speed', 0.2)
+
+def _extent() -> float:
+    """Distance from the window edge to the edge of the border widget"""
+    if conf_style() == 'tron':
+        return conf_focus_d() + 4. * conf_tron_glow()
+    return conf_focus_d()
 
 class FocusBorder(Animate[PyWMWidgetDownstreamState], PyWMWidget):
     def __init__(self, wm: Layout, output: PyWMOutput, parent: FocusBorders, *args: Any, **kwargs: Any):
@@ -42,6 +55,17 @@ class FocusBorder(Animate[PyWMWidgetDownstreamState], PyWMWidget):
         if abs(radius - self._corner_radius) < 0.01:
             return
         self._corner_radius = radius
+        if conf_style() == 'tron':
+            s = self._output.scale
+            self.set_primitive("tron_border", [], [
+                *parse_color(conf_color()),
+                *parse_color(conf_tron_accent()),
+                self._corner_radius * s,
+                conf_focus_w() * s,
+                (_extent() - conf_focus_d()) * s,
+                conf_tron_glow() * s,
+                float(conf_tron_speed())])
+            return
         self.set_primitive("rounded_corners_border", [], [
             # Color
             *get_border_color(conf_color(), (conf_gradient_primary(), conf_gradient_secondary(), conf_gradient_angle())),
@@ -64,12 +88,14 @@ class FocusBorder(Animate[PyWMWidgetDownstreamState], PyWMWidget):
                 intersects = False
 
         if box[2] == 0 or box[3] == 0 or not intersects:
-            return PyWMWidgetDownstreamState(0, (self._output.pos[0] - conf_focus_d() - self._corner_radius,
-                                                 self._output.pos[1] - conf_focus_d() - self._corner_radius,
-                                                 self._output.width + 2*conf_focus_d() + 2*self._corner_radius,
-                                                 self._output.height + 2*conf_focus_d() + 2*self._corner_radius), lock_enabled=False, opacity=opacity)
+            e = _extent()
+            return PyWMWidgetDownstreamState(0, (self._output.pos[0] - e - self._corner_radius,
+                                                 self._output.pos[1] - e - self._corner_radius,
+                                                 self._output.width + 2*e + 2*self._corner_radius,
+                                                 self._output.height + 2*e + 2*self._corner_radius), lock_enabled=False, opacity=opacity)
         else:
-            return PyWMWidgetDownstreamState(box[0], (box[1] - conf_focus_d(), box[2] - conf_focus_d(), box[3] + 2*conf_focus_d(), box[4] + 2*conf_focus_d()), lock_enabled=False, opacity=opacity)
+            e = _extent()
+            return PyWMWidgetDownstreamState(box[0], (box[1] - e, box[2] - e, box[3] + 2*e, box[4] + 2*e), lock_enabled=False, opacity=opacity)
 
     def animate(self, old_box: tuple[float, float, float, float, float, Optional[tuple[float, float, float, float]]], old_opacity: float, new_box: tuple[float, float, float, float, float, Optional[tuple[float, float, float, float]]], new_opacity: float, dt: float) -> None:
         cur = self.reducer(old_box, old_opacity)

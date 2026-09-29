@@ -31,7 +31,7 @@ from .dbus import DBusEndpoint, DBusGestureProvider
 from .panel_launcher import PanelsLauncher
 from .auth_backend import AuthBackend
 
-from .widget import TopBar, BottomBar, Background, Corner, FocusBorders, PreselectBorder
+from .widget import TopBar, BottomBar, Background, TronBackground, Corner, FocusBorders, PreselectBorder
 from .overlay import (
     Overlay,
     MoveResizeOverlay,
@@ -87,6 +87,7 @@ conf_on_reconfigure = configured_value("on_reconfigure", lambda: None)
 conf_lock_on_wakeup = configured_value("lock_on_wakeup", True)
 
 conf_native_top_bar_enabled = configured_value("panels.top_bar.native.enabled", False)
+conf_background_shader = configured_value("background.shader", cast(Optional[str], None))
 conf_native_bottom_bar_enabled = configured_value("panels.bottom_bar.native.enabled", False)
 
 conf_synchronous_update = configured_value("synchronous_update", lambda: None)
@@ -356,7 +357,7 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         # (workspace handle, zoom size) -> viewport (i, j) last used at that size
         self._zoom_memory: dict[tuple[int, int], tuple[float, float]] = {}
 
-        self.backgrounds: list[Background] = []
+        self.backgrounds: list[Union[Background, TronBackground]] = []
         self.top_bars: list[TopBar] = []
         self.bottom_bars: list[BottomBar] = []
         self.corners: list[list[Corner]] = []
@@ -497,7 +498,7 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             self.top_bars = []
 
         self.backgrounds = [
-            self.create_widget(Background, o, get_workspace_for_output(o))
+            self.create_widget(TronBackground if conf_background_shader() == 'tron_grid' else Background, o, get_workspace_for_output(o))
             for o in self.layout
         ]
 

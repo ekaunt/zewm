@@ -5,10 +5,11 @@ import math
 import time
 import logging
 
-from pywm import PyWMBackgroundWidget, PyWMWidgetDownstreamState, PyWMOutput
+from pywm import PyWMBackgroundWidget, PyWMWidget, PyWMWidgetDownstreamState, PyWMOutput
 
 from ..animate import Animatable
 from ..config import configured_value
+from ..util import parse_color
 
 if TYPE_CHECKING:
     from ..state import LayoutState
@@ -253,4 +254,73 @@ class Background(PyWMBackgroundWidget, Animatable):
         result.z_index = -10000
         result.opacity = self._current_state.opacity
         result.box = (self._output.pos[0] + self._current_state.box[0], self._output.pos[1] + self._current_state.box[1], self._current_state.box[2], self._current_state.box[3])
+        return result
+
+
+conf_tron_grid_color = configured_value('background.tron.grid_color', '#18cae6')
+conf_tron_accent_color = configured_value('background.tron.accent_color', '#ff7a18')
+conf_tron_speed = configured_value('background.tron.speed', 1.5)
+
+class TronBackground(PyWMWidget, Animatable):
+    """
+    Animated grid rendered by the tron_grid primitive shader instead of a
+    wallpaper image. Pans and zooms with the workspace like the image does.
+    """
+    def __init__(self, wm: Layout, output: PyWMOutput, workspace: Workspace, *args: Any, **kwargs: Any):
+        PyWMWidget.__init__(self, wm, output, *args, **kwargs)
+        self._output: PyWMOutput = output
+        self._workspace: Workspace = workspace
+
+        # Virtual wallpaper twice the output resolution: room to pan and zoom
+        self._size = (int(2 * output.width * output.scale), int(2 * output.height * output.scale))
+
+        self._current_state = self._state(self.wm.state)
+        self._target_state = self._state(self.wm.state)
+        self._last_frame: float = 0.
+        self._anim_caught: Optional[float] = None
+        self._last_params: Optional[list[float]] = None
+
+    def _state(self, state: LayoutState) -> BackgroundState:
+        return BackgroundState(state, state.get_workspace_state(self._workspace), self._size, (self._output.width, self._output.height), self._output.scale)
+
+    def animate(self, old_state: LayoutState, new_state: LayoutState, dt: float) -> None:
+        self._anim_caught = -dt
+        self._target_state = self._state(new_state)
+        self.damage()
+
+    def flush_animation(self) -> None:
+        self._anim_caught = None
+
+    def process(self) -> PyWMWidgetDownstreamState:
+        t = time.time()
+        if self._anim_caught is None:
+            target_state = self._state(self.wm.state)
+            if target_state.delta(self._target_state) > 1:
+                self._target_state = target_state
+        elif self._anim_caught < 0:
+            self._anim_caught = t - 1./120. - self._anim_caught
+            self._last_frame = t - 1./120.
+
+        if self._current_state.delta(self._target_state) > 1:
+            self._current_state.approach(self._target_state, conf_time_scale(), t - self._last_frame)
+            self.damage()
+        elif self._current_state != self._target_state:
+            self._current_state = self._target_state
+            self.damage()
+        self._last_frame = t
+
+        s = self._output.scale
+        bx, by, bw, bh = self._current_state.box
+        params = [bx * s, by * s, bw * s, bh * s,
+                  *parse_color(conf_tron_grid_color())[:3],
+                  *parse_color(conf_tron_accent_color())[:3],
+                  float(conf_tron_speed())]
+        if params != self._last_params:
+            self._last_params = params
+            self.set_primitive("tron_grid", [], params)
+
+        result = PyWMWidgetDownstreamState()
+        result.z_index = -10000
+        result.opacity = self._current_state.opacity
+        result.box = (self._output.pos[0], self._output.pos[1], self._output.width, self._output.height)
         return result
