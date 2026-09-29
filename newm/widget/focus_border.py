@@ -60,7 +60,8 @@ class FocusBorder(Animate[PyWMWidgetDownstreamState], PyWMWidget):
             self.set_primitive("tron_border", [], [
                 *parse_color(conf_color()),
                 *parse_color(conf_tron_accent()),
-                self._corner_radius * s,
+                # Square windows get a square line; rounded ones a concentric one
+                (self._corner_radius if self._corner_radius > conf_focus_d() + 0.01 else 0.) * s,
                 conf_focus_w() * s,
                 (_extent() - conf_focus_d()) * s,
                 conf_tron_glow() * s,
