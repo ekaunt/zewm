@@ -7,7 +7,8 @@ import logging
 
 from pywm import PyWMBackgroundWidget, PyWMWidget, PyWMWidgetDownstreamState, PyWMOutput
 
-from ..animate import Animatable
+from ..animate import Animate, Animatable
+from ..interpolation import Interpolation
 from ..config import configured_value
 from ..util import parse_color
 
@@ -257,63 +258,68 @@ class Background(PyWMBackgroundWidget, Animatable):
         return result
 
 
+
 conf_tron_grid_color = configured_value('background.tron.grid_color', '#18cae6')
 conf_tron_accent_color = configured_value('background.tron.accent_color', '#ff7a18')
-conf_tron_speed = configured_value('background.tron.speed', 1.5)
+conf_tron_speed = configured_value('background.tron.speed', 0.6)
 
-class TronBackground(PyWMWidget, Animatable):
+TronGridState = tuple[float, float, float, float, float]
+
+class _TronGridInterpolation(Interpolation[TronGridState]):
+    """Linear in screen space, like the views, so the grid stays on the tiles"""
+    def __init__(self, s0: TronGridState, s1: TronGridState) -> None:
+        self.s0, self.s1 = s0, s1
+
+    def get(self, at: float) -> TronGridState:
+        at = min(1., max(0., at))
+        a, b = self.s0, self.s1
+        return (a[0] + (b[0] - a[0]) * at, a[1] + (b[1] - a[1]) * at, a[2] + (b[2] - a[2]) * at,
+                a[3] + (b[3] - a[3]) * at, a[4] + (b[4] - a[4]) * at)
+
+class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
     """
-    Animated grid rendered by the tron_grid primitive shader instead of a
-    wallpaper image. Pans and zooms with the workspace like the image does.
+    Animated 2D grid rendered by the tron_grid primitive shader instead of a
+    wallpaper image. Its front layer is the tile grid of the workspace.
     """
     def __init__(self, wm: Layout, output: PyWMOutput, workspace: Workspace, *args: Any, **kwargs: Any):
         PyWMWidget.__init__(self, wm, output, *args, **kwargs)
+        Animate.__init__(self)
         self._output: PyWMOutput = output
         self._workspace: Workspace = workspace
-
-        # Virtual wallpaper twice the output resolution: room to pan and zoom
-        self._size = (int(2 * output.width * output.scale), int(2 * output.height * output.scale))
-
-        self._current_state = self._state(self.wm.state)
-        self._target_state = self._state(self.wm.state)
-        self._last_frame: float = 0.
-        self._anim_caught: Optional[float] = None
+        self._anchor: tuple[float, float] = (0., 0.)
         self._last_params: Optional[list[float]] = None
 
-    def _state(self, state: LayoutState) -> BackgroundState:
-        return BackgroundState(state, state.get_workspace_state(self._workspace), self._size, (self._output.width, self._output.height), self._output.scale)
+    def _grid(self, state: LayoutState) -> TronGridState:
+        """(tile w, tile h, x of tile 0, y of tile 0, opacity) in output coordinates"""
+        ws = self._workspace
+        ws_state = state.get_workspace_state(ws)
+        h_eff = ws.height - ws_state.top_excluded - ws_state.bottom_excluded
+        tw = ws.width / ws_state.size
+        th = h_eff / ws_state.size
+        ox = ws.pos_x - self._output.pos[0] - ws_state.i * tw
+        oy = ws.pos_y - self._output.pos[1] + ws_state.top_excluded - ws_state.j * th
+        return tw, th, ox, oy, state.background_opacity
 
     def animate(self, old_state: LayoutState, new_state: LayoutState, dt: float) -> None:
-        self._anim_caught = -dt
-        self._target_state = self._state(new_state)
+        self._animate(_TronGridInterpolation(self._grid(old_state), self._grid(new_state)), dt)
+
+    def _anim_damage(self) -> None:
         self.damage()
 
-    def flush_animation(self) -> None:
-        self._anim_caught = None
-
     def process(self) -> PyWMWidgetDownstreamState:
-        t = time.time()
-        if self._anim_caught is None:
-            target_state = self._state(self.wm.state)
-            if target_state.delta(self._target_state) > 1:
-                self._target_state = target_state
-        elif self._anim_caught < 0:
-            self._anim_caught = t - 1./120. - self._anim_caught
-            self._last_frame = t - 1./120.
+        tw, th, ox, oy, opacity = self._process(self._grid(self.wm.state))
 
-        if self._current_state.delta(self._target_state) > 1:
-            self._current_state.approach(self._target_state, conf_time_scale(), t - self._last_frame)
-            self.damage()
-        elif self._current_state != self._target_state:
-            self._current_state = self._target_state
-            self.damage()
-        self._last_frame = t
+        # Light cycles start near the view; move their home only when it drifts away
+        cx = (0.5 * self._output.width - ox) / tw
+        cy = (0.5 * self._output.height - oy) / th
+        if abs(cx - self._anchor[0]) > 2 or abs(cy - self._anchor[1]) > 2:
+            self._anchor = (float(round(cx)), float(round(cy)))
 
         s = self._output.scale
-        bx, by, bw, bh = self._current_state.box
-        params = [bx * s, by * s, bw * s, bh * s,
+        params = [tw * s, th * s, ox * s, oy * s,
                   *parse_color(conf_tron_grid_color())[:3],
                   *parse_color(conf_tron_accent_color())[:3],
+                  *self._anchor,
                   float(conf_tron_speed())]
         if params != self._last_params:
             self._last_params = params
@@ -321,6 +327,6 @@ class TronBackground(PyWMWidget, Animatable):
 
         result = PyWMWidgetDownstreamState()
         result.z_index = -10000
-        result.opacity = self._current_state.opacity
+        result.opacity = opacity
         result.box = (self._output.pos[0], self._output.pos[1], self._output.width, self._output.height)
         return result
