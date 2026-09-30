@@ -262,6 +262,7 @@ class Background(PyWMBackgroundWidget, Animatable):
 conf_tron_grid_color = configured_value('background.tron.grid_color', '#18cae6')
 conf_tron_accent_color = configured_value('background.tron.accent_color', '#ff7a18')
 conf_tron_speed = configured_value('background.tron.speed', 0.6)
+conf_background_shader = configured_value('background.shader', cast(Optional[str], None))
 # Seconds the parallax layers take to catch up after a move (glide)
 conf_tron_glide = configured_value('background.tron.glide', 0.)
 
@@ -294,6 +295,8 @@ class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
         self._cam: Optional[tuple[float, float, float]] = None
         self._vel: tuple[float, float] = (0., 0.)
         self._cam_t: float = 0.
+        # Start of the build-in animation, on the shaders' clock (CLOCK_MONOTONIC mod 3600)
+        self._build_start = time.monotonic() % 3600.
 
     def _grid(self, state: LayoutState) -> TronGridState:
         """(tile w, tile h, x of tile 0, y of tile 0, opacity) in output coordinates"""
@@ -343,6 +346,15 @@ class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
         self._cam_t = t
 
         s = self._output.scale
+        shader = conf_background_shader() or 'tron_grid'
+        if shader == 'tron_cb_grid':
+            # callbetter.com: grid scrolls at 0.35x of the pan, like the site on scroll
+            params = [s, cx * self._output.width * 0.35, cy * self._output.height * 0.35, self._build_start]
+            if params != self._last_params:
+                self._last_params = params
+                self.set_primitive(shader, [], params)
+            return self._result(opacity)
+
         params = [tw * s, th * s, ox * s, oy * s,
                   *parse_color(conf_tron_grid_color())[:3],
                   *parse_color(conf_tron_accent_color())[:3],
@@ -352,7 +364,9 @@ class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
         if params != self._last_params:
             self._last_params = params
             self.set_primitive("tron_grid", [], params)
+        return self._result(opacity)
 
+    def _result(self, opacity: float) -> PyWMWidgetDownstreamState:
         result = PyWMWidgetDownstreamState()
         result.z_index = -10000
         result.opacity = opacity

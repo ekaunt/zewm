@@ -498,7 +498,7 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             self.top_bars = []
 
         self.backgrounds = [
-            self.create_widget(TronBackground if conf_background_shader() == 'tron_grid' else Background, o, get_workspace_for_output(o))
+            self.create_widget(TronBackground if (conf_background_shader() or '').startswith('tron_') else Background, o, get_workspace_for_output(o))
             for o in self.layout
         ]
 

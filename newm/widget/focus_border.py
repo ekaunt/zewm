@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from ..layout import Layout
 
 import logging
+import time
 
 from pywm import PyWMWidget, PyWMWidgetDownstreamState, PyWMOutput, DamageTracked
 
@@ -35,10 +36,18 @@ conf_tron_accent = configured_value('focus.tron.accent_color', '#ff7a18')
 conf_tron_glow = configured_value('focus.tron.glow', 6.)
 conf_tron_speed = configured_value('focus.tron.speed', 0.2)
 
+# 'callbetter': callbetter.com panel look (tron_cb_border shader): 1px border,
+# corner brackets, soft glow, a light traces the border once on focus change.
+conf_cb_glow = configured_value('focus.callbetter.glow', 8.)
+conf_cb_arm = configured_value('focus.callbetter.bracket', 18.)
+conf_cb_gap = configured_value('focus.callbetter.bracket_gap', 3.)
+
 def _extent() -> float:
     """Distance from the window edge to the edge of the border widget"""
     if conf_style() == 'tron':
         return conf_focus_d() + 4. * conf_tron_glow()
+    if conf_style() == 'callbetter':
+        return conf_focus_d() + max(4. * conf_cb_glow(), conf_cb_gap() + 3.)
     return conf_focus_d()
 
 class FocusBorder(Animate[PyWMWidgetDownstreamState], PyWMWidget):
@@ -49,12 +58,34 @@ class FocusBorder(Animate[PyWMWidgetDownstreamState], PyWMWidget):
         Animate.__init__(self)
 
         self._corner_radius = -1.
+        self._focus_t = -100.
         self.set_corner_radius(conf_view_corner_radius() + conf_focus_d())
+
+    def trace(self) -> None:
+        """Start the light trace of the callbetter style (shader clock: CLOCK_MONOTONIC mod 3600)"""
+        if conf_style() != 'callbetter':
+            return
+        self._focus_t = time.monotonic() % 3600.
+        self._corner_radius = -1.
+        self.set_corner_radius(self._line_radius)
 
     def set_corner_radius(self, radius: float) -> None:
         if abs(radius - self._corner_radius) < 0.01:
             return
         self._corner_radius = radius
+        self._line_radius = radius
+        if conf_style() == 'callbetter':
+            s = self._output.scale
+            self.set_primitive("tron_cb_border", [], [
+                *parse_color(conf_color()),
+                (radius if radius > conf_focus_d() + 0.01 else 0.) * s,
+                (_extent() - conf_focus_d()) * s,
+                conf_cb_glow() * s,
+                self._focus_t,
+                conf_cb_arm() * s,
+                conf_cb_gap() * s,
+                s])
+            return
         if conf_style() == 'tron':
             s = self._output.scale
             self.set_primitive("tron_border", [], [
@@ -156,6 +187,8 @@ class FocusBorders(Animatable, DamageTracked):
         self.current_view = view
         self._set_box_and_radius(layout_state=present_states[1] if present_states is not None else None)
         new_box = self.current_box
+        for b in self.borders:
+            b.trace()
 
         if animate:
             for b in self.borders:
