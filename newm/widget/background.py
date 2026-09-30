@@ -263,7 +263,7 @@ conf_tron_grid_color = configured_value('background.tron.grid_color', '#18cae6')
 conf_tron_accent_color = configured_value('background.tron.accent_color', '#ff7a18')
 conf_tron_speed = configured_value('background.tron.speed', 0.6)
 # Seconds the parallax layers take to catch up after a move (glide)
-conf_tron_glide = configured_value('background.tron.glide', 0.35)
+conf_tron_glide = configured_value('background.tron.glide', 0.)
 
 TronGridState = tuple[float, float, float, float, float]
 
@@ -324,8 +324,10 @@ class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
         # Parallax camera eases toward the real one: the layers keep sliding after a move
         target = (cx, cy, self._output.width / tw)
         t = time.time()
-        if self._cam is None:
+        if self._cam is None or conf_tron_glide() <= 0:
+            # No glide: layers move exactly with the windows, just at their parallax rate
             self._cam = target
+            self._vel = (0., 0.)
         else:
             dt = min(max(t - self._cam_t, 0.), 0.1)
             k = 1. - math.exp(-dt / max(conf_tron_glide(), 1e-3))
