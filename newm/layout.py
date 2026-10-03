@@ -347,6 +347,9 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         # Last pointer (motion/button/scroll/gesture) and key-press input times.
         # mouse_follows_focus only warps for focus changes the keyboard caused.
         self._pointer_input_at: float = 0.0
+        # Button holding a Super+drag of a floating window (BTN_LEFT move,
+        # BTN_RIGHT resize), or None
+        self._float_drag_button: Optional[int] = None
         self._key_input_at: float = 0.0
         # Handle of the last focused regular (non-layer, non-panel) view, so
         # closing a layer surface such as rofi returns focus to it.
@@ -868,6 +871,32 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         self._pointer_input_at = time.time()
         if self.is_locked():
             return False
+
+        # Super+left drag moves, Super+right drag resizes a floating window
+        BTN_LEFT, BTN_RIGHT = 0x110, 0x111
+        if state != PYWM_PRESSED and button == self._float_drag_button:
+            # handled here, not in the overlay: a quick click can release the
+            # button before the overlay is ready, which would leave it stuck
+            self._float_drag_button = None
+            if isinstance(self.overlay, MoveResizeFloatingOverlay):
+                self.exit_overlay()
+            return True
+        if state == PYWM_PRESSED and self.overlay is None and \
+                button in (BTN_LEFT, BTN_RIGHT) and \
+                self.modifiers.has(conf_gesture_binding_move_resize()[0]):
+            view = self.find_focused_view()
+            if view is not None and view.is_float(self.state) and view.up_state is not None:
+                try:
+                    x, y, w, h = view.reducer(view.up_state, self.state).logical_box
+                    cx, cy = self.cursor_pos
+                    under = x <= cx < x + w and y <= cy < y + h
+                except Exception:
+                    under = False
+                if under:
+                    self._float_drag_button = button
+                    self.enter_overlay(MoveResizeFloatingOverlay(
+                        self, view, mode="resize" if button == BTN_RIGHT else "move"))
+                    return True
 
         if self.overlay is not None and self.overlay.ready():
             return self.overlay.on_button(time_msec, button, state)
