@@ -344,6 +344,10 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         self.state = LayoutState(self)
 
         self.overlay: Optional[Overlay] = None
+        # Last pointer (motion/button/scroll/gesture) and key-press input times.
+        # mouse_follows_focus only warps for focus changes the keyboard caused.
+        self._pointer_input_at: float = 0.0
+        self._key_input_at: float = 0.0
         # Handle of the last focused regular (non-layer, non-panel) view, so
         # closing a layer surface such as rofi returns focus to it.
         self.last_regular_focus: Optional[int] = None
@@ -798,6 +802,8 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         """
         These are processed via on_modifiers
         """
+        if state == PYWM_PRESSED:
+            self._key_input_at = time.time()
         if keysyms in ["Super_L", "Super_R", "Alt_L", "Alt_R", "Logo_L", "Logo_R"]:
             return False
 
@@ -841,6 +847,7 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         return False
 
     def on_motion(self, time_msec: int, delta_x: float, delta_y: float) -> bool:
+        self._pointer_input_at = time.time()
         self._update_active_workspace()
         if self.is_locked():
             return False
@@ -858,6 +865,7 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         return False
 
     def on_button(self, time_msec: int, button: int, state: int) -> bool:
+        self._pointer_input_at = time.time()
         if self.is_locked():
             return False
 
@@ -874,6 +882,7 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         delta: float,
         delta_discrete: int,
     ) -> bool:
+        self._pointer_input_at = time.time()
         if self.is_locked():
             return False
 
@@ -898,6 +907,7 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
     def on_gesture(
         self, kind: str, time_msec: int, args: list[Union[float, int]]
     ) -> bool:
+        self._pointer_input_at = time.time()
         for g in self.gesture_providers:
             res = g.on_pywm_gesture(kind, time_msec, args)
             if res == 2:
@@ -1440,6 +1450,15 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
 
     def warp_cursor_to_focus(self, view: View) -> None:
         if not conf_mouse_follows_focus() or self.overlay is not None:
+            return
+        # Bars, rofi, notifications: never pull the cursor onto them.
+        if view.role == "layer" or view.is_panel():
+            return
+        # Only warp when the keyboard moved focus, or a new window opened.
+        # Focus that followed the pointer (or a click/scroll/swipe) keeps the
+        # cursor where the user put it.
+        new_window = time.time() - view._initial_time < 2.0
+        if not new_window and self._pointer_input_at > self._key_input_at:
             return
 
         def warp() -> None:
