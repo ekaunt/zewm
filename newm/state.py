@@ -280,10 +280,14 @@ class WorkspaceState:
             for p in wm.panels(self._ws):
                 if p.up_state is not None and p.panel in ["bar", "top_bar", "bottom_bar"]:
                     view_state = p.reducer(p.up_state, wm_state)
+                    # A bar floating margin px off the edge (e.g. waybar margin-top)
+                    # reserves the same margin on its inner side, so the gap to the
+                    # windows is margin + padding, like the gap between windows
+                    margin = p.up_state.size_constraints[5:9]  # left, top, right, bottom
                     if p.panel == "top_bar":
-                        top_bar_height = view_state.box[3]
+                        top_bar_height = view_state.box[3] + (2 * margin[1] if len(margin) == 4 else 0)
                     elif p.panel == "bottom_bar":
-                        bottom_bar_height = view_state.box[3]
+                        bottom_bar_height = view_state.box[3] + (2 * margin[3] if len(margin) == 4 else 0)
                     else:
                         if view_state.box[1] <= 1.:
                             top_bar_height = view_state.box[3]

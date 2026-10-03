@@ -14,7 +14,7 @@ from .interpolation import ViewDownstreamInterpolation
 from .animate import Animate, Animatable
 from .overlay import MoveResizeFloatingOverlay
 from .config import configured_value
-from .widget import SSDs, BackgroundBlur
+from .widget import SSDs, BackgroundBlur, ViewOrnament
 
 if TYPE_CHECKING:
     from .layout import Layout, Workspace
@@ -78,6 +78,7 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
 
         self._ssd: Optional[SSDs] = None
         self._background: Optional[BackgroundBlur] = None
+        self._ornament: Optional[ViewOrnament] = None
         self._opacity: float = 1.0
 
         # State machine
@@ -870,6 +871,10 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
         if result != (None, None):
             self._mapped = True
 
+        if self._initial_kind == 1 and self._ornament is None and (orn := self._rules.get('ornament')):
+            radius = float(orn.get('radius', 0.)) if isinstance(orn, dict) else 0.
+            self._ornament = ViewOrnament(self.wm, self, radius)
+
         self.validate_ssd(override_float=self._initial_kind == 2)
         self.validate_background()
 
@@ -878,6 +883,9 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
 
     def process(self, up_state: PyWMViewUpstreamState) -> PyWMViewDownstreamState:
         if self._mapped:
+            if self._ornament is not None:
+                # the layer surface may have resized (dunst stacking notifications)
+                self._ornament.damage()
             return self._process(self.reducer(up_state, self.wm.state))
 
         self.damage()
@@ -973,6 +981,9 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
         self.wm.enter_constant_damage()
 
         self._destroyed = True
+        if self._ornament is not None:
+            self._ornament.destroy()
+            self._ornament = None
         if self._ssd is not None:
             self._ssd.destroy()
         if self._background is not None:

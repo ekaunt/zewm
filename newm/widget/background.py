@@ -265,6 +265,13 @@ conf_tron_speed = configured_value('background.tron.speed', 0.6)
 conf_background_shader = configured_value('background.shader', cast(Optional[str], None))
 # Seconds the parallax layers take to catch up after a move (glide)
 conf_tron_glide = configured_value('background.tron.glide', 0.)
+# tron_cb_grid: the grid leans away from the focused window by this fraction of
+# its offset from the output centre (stars half as much), easing over focus_glide s
+conf_tron_focus_parallax = configured_value('background.tron.focus_parallax', 0.08)
+conf_tron_focus_glide = configured_value('background.tron.focus_glide', 1.2)
+# tron_cb_grid: the grid zooms with the workspace as zoom ** zoom_parallax (stars at half
+# that), where zoom is 1 at the default 2x2 view
+conf_tron_zoom_parallax = configured_value('background.tron.zoom_parallax', 0.75)
 
 TronGridState = tuple[float, float, float, float, float]
 
@@ -297,6 +304,9 @@ class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
         self._cam_t: float = 0.
         # Start of the build-in animation, on the shaders' clock (CLOCK_MONOTONIC mod 3600)
         self._build_start = time.monotonic() % 3600.
+        # Focus parallax offset (logical px) and when it was last stepped
+        self._lean: Optional[tuple[float, float]] = None
+        self._lean_t: float = 0.
 
     def _grid(self, state: LayoutState) -> TronGridState:
         """(tile w, tile h, x of tile 0, y of tile 0, opacity) in output coordinates"""
@@ -348,8 +358,13 @@ class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
         s = self._output.scale
         shader = conf_background_shader() or 'tron_grid'
         if shader == 'tron_cb_grid':
+            lx, ly = self._step_lean(t)
             # callbetter.com: grid scrolls at 0.35x of the pan, like the site on scroll
-            params = [s, cx * self._output.width * 0.35, cy * self._output.height * 0.35, self._build_start]
+            gx = cx * self._output.width * 0.35 + lx
+            gy = cy * self._output.height * 0.35 + ly
+            zoom = max(2. * tw / self._workspace.width, 1e-3)
+            zp = float(conf_tron_zoom_parallax())
+            params = [s, gx, gy, self._build_start, 0.5 * gx, 0.5 * gy, zoom ** zp, zoom ** (0.5 * zp)]
             if params != self._last_params:
                 self._last_params = params
                 self.set_primitive(shader, [], params)
@@ -365,6 +380,29 @@ class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
             self._last_params = params
             self.set_primitive("tron_grid", [], params)
         return self._result(opacity)
+
+    def _step_lean(self, t: float) -> tuple[float, float]:
+        """Ease the focus parallax offset toward the focused window; damage until it settles"""
+        target = (0., 0.)
+        box = self.wm.focus_borders.current_box
+        if box[0] != -999 and box[3] > 0 and box[4] > 0:
+            k = float(conf_tron_focus_parallax())
+            target = (k * (box[1] + box[3]/2 - self._output.pos[0] - self._output.width/2),
+                      k * (box[2] + box[4]/2 - self._output.pos[1] - self._output.height/2))
+        if self._lean is None:
+            self._lean = target
+        else:
+            dt = min(max(t - self._lean_t, 0.), 0.1)
+            a = 1. - math.exp(-dt / max(float(conf_tron_focus_glide()), 1e-3))
+            lean = (self._lean[0] + (target[0] - self._lean[0]) * a,
+                    self._lean[1] + (target[1] - self._lean[1]) * a)
+            if max(abs(target[0] - lean[0]), abs(target[1] - lean[1])) > 0.05:
+                self._lean = lean
+                self.damage()
+            else:
+                self._lean = target
+        self._lean_t = t
+        return self._lean
 
     def _result(self, opacity: float) -> PyWMWidgetDownstreamState:
         result = PyWMWidgetDownstreamState()

@@ -670,6 +670,7 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             *self.top_bars,
             *self.bottom_bars,
             self.focus_borders,
+            *[v._ornament for v in self._views.values() if v._ornament is not None],
         ]
 
     def do_flush_animation(self) -> None:
