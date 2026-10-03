@@ -1,0 +1,83 @@
+From 62684f30813840a2fdabbfa96f359612ce8e3748 Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Tue, 29 Sep 2026 19:38:31 -0400
+Subject: [PATCH 4/6] tron_grid: four denser parallax layers with motion blur
+
+Layers follow a smoothed camera passed from Python (glide), so they keep
+sliding after a fast move; motion blur along the camera velocity.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ .../shaders/primitive/tron_grid/fragment.glsl | 41 +++++++++++++------
+ 1 file changed, 29 insertions(+), 12 deletions(-)
+
+diff --git a/src/wm/shaders/primitive/tron_grid/fragment.glsl b/src/wm/shaders/primitive/tron_grid/fragment.glsl
+index c6400c6..24200b9 100644
+--- a/src/wm/shaders/primitive/tron_grid/fragment.glsl
++++ b/src/wm/shaders/primitive/tron_grid/fragment.glsl
+@@ -15,8 +15,11 @@ precision mediump float;
+  * 7-9   accent color (second light cycle)
+  * 10-11 tile the light cycles start from
+  * 12    light cycle speed (tiles per second)
++ * 13-14 smoothed camera centre (tiles) for the parallax layers
++ * 15    smoothed tiles visible across
++ * 16-17 camera velocity (tiles per second), for motion blur
+  */
+-uniform float params_float[13];
++uniform float params_float[18];
+ uniform float alpha;
+ uniform float time;
+ varying vec2 v_texcoord;
+@@ -79,24 +82,38 @@ void main() {
+     vec2 tile = max(vec2(params_float[0], params_float[1]), vec2(1.0));
+     vec2 o = vec2(params_float[2], params_float[3]);
+ 
+-    /* Camera: centre in tile units and tiles visible across */
++    /* Parallax layers follow a smoothed camera, so they keep gliding after a move */
+     vec2 screen = vec2(width, height);
+-    vec2 centre = (0.5 * screen - o) / tile;
+-    float size = width / tile.x;
++    vec2 centre = vec2(params_float[13], params_float[14]);
++    float size = max(params_float[15], 0.05);
++    vec2 vel = vec2(params_float[16], params_float[17]);
++    float speed = length(vel);
+ 
+     /* Base: deep navy, slightly lifted in the middle */
+     vec2 q = v_texcoord - 0.5;
+     vec3 col = mix(vec3(0.004, 0.018, 0.03), vec3(0.0, 0.004, 0.01), smoothstep(0.1, 0.75, length(q)));
+ 
+-    /* Parallax layers: farther layers pan and zoom less */
+-    for(int l = 0; l < 2; l++){
+-        float f = l == 0 ? 0.3 : 0.6;
+-        float density = l == 0 ? 8.0 : 4.0;
+-        float lsize = pow(max(size, 0.05), f) * density;
+-        vec2 cell = vec2(width, width * tile.y / tile.x) / lsize;
++    /* Four layers, far to near: denser and dimmer the farther away, pan and zoom less */
++    for(int l = 0; l < 4; l++){
++        float fl = float(l);
++        float f = 0.12 + 0.18 * fl;
++        float density = 14.0 - 3.5 * fl;
++        float bright = 0.07 + 0.035 * fl;
++        vec2 cell = vec2(width, width * tile.y / tile.x) / (pow(size, f) * density);
+         vec2 lo = 0.5 * screen - centre * f * density * cell;
+-        float g = grid_layer(frag, lo, cell, 1.0);
+-        col += gcol * g * (l == 0 ? 0.05 : 0.09);
++        /* Motion blur: average along the last ~40 ms of travel */
++        vec2 vpx = vel * f * density * cell;
++        float g = 0.0;
++        float dots = 0.0;
++        for(int i = 0; i < 4; i++){
++            vec2 fr = frag + vpx * (float(i) * 0.013);
++            g += grid_layer(fr, lo, cell, 1.0);
++            dots += exp(-length(line_dist(fr, lo, cell)) / 1.6);
++        }
++        g *= 0.25;
++        dots *= 0.25;
++        vec3 lc = mix(gcol * vec3(0.55, 0.75, 1.0), gcol, fl / 3.0);
++        col += lc * (g * bright * (1.0 + 0.6 * min(speed, 2.0)) + dots * bright * 2.5);
+     }
+ 
+     /* Front layer: the tile grid, with quarter-tile subdivisions */
+-- 
+2.55.0
+

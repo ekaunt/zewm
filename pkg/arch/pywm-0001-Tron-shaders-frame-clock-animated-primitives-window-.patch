@@ -1,0 +1,959 @@
+From b3650f7a3a1ecf6ec2f0f0da18abb0df859f4ae1 Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Tue, 29 Sep 2026 19:09:12 -0400
+Subject: [PATCH 1/6] Tron shaders: frame clock, animated primitives, window
+ rez-in
+
+Adds a time uniform to primitive and texture shaders and an fx_age
+uniform (seconds since a view was first drawn) to texture shaders.
+Primitives named tron_* redraw on a timer at anim_fps (new config key,
+default 60), and views redraw while their rez-in runs.
+
+New shaders: tron_grid (animated perspective grid background),
+tron_border (glowing focus border with racing streaks) and the tron
+texture set (rez-in scan on window open).
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ include/wm/wm_config.h                        |   3 +
+ include/wm/wm_renderer.h                      |  11 ++
+ include/wm/wm_view.h                          |   5 +
+ include/wm/wm_widget.h                        |   4 +
+ src/py/_pywmmodule.c                          |   1 +
+ src/wm/shaders/meson.build                    |   7 +-
+ .../primitive/tron_border/fragment.glsl       |  65 ++++++++
+ .../shaders/primitive/tron_border/vertex.glsl |  10 ++
+ .../shaders/primitive/tron_grid/fragment.glsl | 144 ++++++++++++++++++
+ .../shaders/primitive/tron_grid/vertex.glsl   |  10 ++
+ src/wm/shaders/texture/tron/fragment_ext.glsl |  93 +++++++++++
+ .../shaders/texture/tron/fragment_rgba.glsl   |  92 +++++++++++
+ .../shaders/texture/tron/fragment_rgbx.glsl   |  92 +++++++++++
+ src/wm/shaders/texture/tron/vertex.glsl       |   9 ++
+ src/wm/wm_config.c                            |   1 +
+ src/wm/wm_renderer.c                          |  14 ++
+ src/wm/wm_view.c                              |  39 +++++
+ src/wm/wm_widget.c                            |  29 ++++
+ 18 files changed, 627 insertions(+), 2 deletions(-)
+ create mode 100644 src/wm/shaders/primitive/tron_border/fragment.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_border/vertex.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_grid/fragment.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_grid/vertex.glsl
+ create mode 100644 src/wm/shaders/texture/tron/fragment_ext.glsl
+ create mode 100644 src/wm/shaders/texture/tron/fragment_rgba.glsl
+ create mode 100644 src/wm/shaders/texture/tron/fragment_rgbx.glsl
+ create mode 100644 src/wm/shaders/texture/tron/vertex.glsl
+
+diff --git a/include/wm/wm_config.h b/include/wm/wm_config.h
+index 9a394d4..e51e308 100644
+--- a/include/wm/wm_config.h
++++ b/include/wm/wm_config.h
+@@ -35,6 +35,9 @@ struct wm_config {
+     bool enable_xwayland;
+     int callback_frequency;
+ 
++    /* Redraw rate of animated (tron_*) primitives and the window rez-in effect */
++    int anim_fps;
++
+     char xkb_model[WM_CONFIG_STRLEN];
+     char xkb_layout[WM_CONFIG_STRLEN];
+     char xkb_variant[WM_CONFIG_STRLEN];
+diff --git a/include/wm/wm_renderer.h b/include/wm/wm_renderer.h
+index 066ab92..7786f5e 100644
+--- a/include/wm/wm_renderer.h
++++ b/include/wm/wm_renderer.h
+@@ -37,6 +37,10 @@ struct wm_renderer_texture_shader {
+     GLint padding_b;
+     GLint cornerradius;
+     GLint lock_perc;
++
++    /* Animation clock (seconds) and age of the rendered view (seconds since first render) */
++    GLint time;
++    GLint fx_age;
+ };
+ 
+ struct wm_renderer_texture_shaders {
+@@ -65,6 +69,8 @@ struct wm_renderer_primitive_shader {
+     int n_params_float;
+     GLint params_float;
+     GLint params_int;
++
++    GLint time;
+ };
+ 
+ #define WM_RENDERER_DOWNSAMPLE_BUFFERS 4
+@@ -153,6 +159,11 @@ struct wm_renderer {
+ 
+     unsigned int selected_buffer;
+ #endif
++
++    /* Seconds on CLOCK_MONOTONIC, wrapped to keep float precision; set per frame */
++    float time;
++    /* Age of the view currently being rendered; large when not rendering a view */
++    float fx_age;
+ };
+ 
+ void wm_renderer_init(struct wm_renderer *renderer, struct wm_server *server);
+diff --git a/include/wm/wm_view.h b/include/wm/wm_view.h
+index 4e76762..0b39b52 100644
+--- a/include/wm/wm_view.h
++++ b/include/wm/wm_view.h
+@@ -33,6 +33,11 @@ struct wm_view {
+     bool fullscreen;
+     bool maximized;
+     bool resizing;
++
++    /* First frame this view was drawn: drives the rez-in effect of texture shaders */
++    bool fx_started;
++    struct timespec fx_start;
++    struct wl_event_source* fx_timer;
+ };
+ 
+ void wm_view_base_init(struct wm_view* view, struct wm_server* server);
+diff --git a/include/wm/wm_widget.h b/include/wm/wm_widget.h
+index d481383..5f7f553 100644
+--- a/include/wm/wm_widget.h
++++ b/include/wm/wm_widget.h
+@@ -26,6 +26,10 @@ struct wm_widget {
+         int n_params_float;
+         float* params_float;
+     } primitive;
++
++    /* Redraw timer for animated (tron_*) primitives */
++    struct wl_event_source* anim_timer;
++    bool anim_pending;
+ };
+ 
+ void wm_widget_init(struct wm_widget* widget, struct wm_server* server);
+diff --git a/src/py/_pywmmodule.c b/src/py/_pywmmodule.c
+index b39b500..f2ae4e4 100644
+--- a/src/py/_pywmmodule.c
++++ b/src/py/_pywmmodule.c
+@@ -62,6 +62,7 @@ static void set_config(struct wm_config* conf, PyObject* dict, int reconfigure){
+     o = PyDict_GetItemString(dict, "xkb_options"); if(o){ strncpy(conf->xkb_options, PyBytes_AsString(o), WM_CONFIG_STRLEN-1); }
+ 
+     o = PyDict_GetItemString(dict, "texture_shaders"); if(o){ strncpy(conf->texture_shaders, PyBytes_AsString(o), WM_CONFIG_STRLEN-1); }
++    o = PyDict_GetItemString(dict, "anim_fps"); if(o){ conf->anim_fps = PyLong_AsLong(o); if(conf->anim_fps < 1) conf->anim_fps = 1; }
+     o = PyDict_GetItemString(dict, "renderer_mode"); if(o){ strncpy(conf->renderer_mode, PyBytes_AsString(o), WM_CONFIG_STRLEN-1); }
+ 
+     o = PyDict_GetItemString(dict, "xcursor_theme"); if(o){ wm_config_set_xcursor_theme(conf, PyBytes_AsString(o)); }
+diff --git a/src/wm/shaders/meson.build b/src/wm/shaders/meson.build
+index 9f46530..d28f7f1 100644
+--- a/src/wm/shaders/meson.build
++++ b/src/wm/shaders/meson.build
+@@ -3,14 +3,17 @@ prog_python = import('python').find_installation('python3')
+ texture_shaders = [
+   'noeffect',
+   'basic',
+-  'fancy'
++  'fancy',
++  'tron'
+ ]
+ 
+ primitive_shaders = [
+   'rect',
+   'rounded_corners_rect',
+   'rounded_corners_border',
+-  'corner'
++  'corner',
++  'tron_border',
++  'tron_grid'
+ ]
+ 
+ quad_shader_files = [
+diff --git a/src/wm/shaders/primitive/tron_border/fragment.glsl b/src/wm/shaders/primitive/tron_border/fragment.glsl
+new file mode 100644
+index 0000000..d393162
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_border/fragment.glsl
+@@ -0,0 +1,65 @@
++precision mediump float;
++/*
++ * 0-3   primary color (r, g, b, a)
++ * 4-7   secondary color (r, g, b, a) - the second light cycle
++ * 8     corner radius of the line
++ * 9     line width
++ * 10    inset: distance from widget edge to line centre (room for glow)
++ * 11    glow falloff in px
++ * 12    laps per second of the racing streaks
++ */
++uniform float params_float[13];
++uniform float alpha;
++uniform float time;
++varying vec2 v_texcoord;
++
++uniform float width;
++uniform float height;
++
++void main() {
++    vec2 p = (v_texcoord - 0.5) * vec2(width, height);
++    float inset = params_float[10];
++    vec2 half_ext = 0.5 * vec2(width, height) - inset;
++    float r = min(params_float[8], min(half_ext.x, half_ext.y));
++
++    /* Signed distance to the rounded rectangle the line runs along */
++    vec2 q = abs(p) - half_ext + r;
++    float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
++    float dist = abs(sd);
++
++    float lw = 0.5 * params_float[9];
++    float core = 1.0 - smoothstep(lw - 0.75, lw + 0.75, dist);
++    float glow = exp(-max(dist - lw, 0.0) / max(params_float[11], 0.1));
++
++    /* Position along the perimeter, clockwise from the top left corner */
++    float hw = half_ext.x;
++    float hh = half_ext.y;
++    float perim = 4.0 * (hw + hh);
++    float s;
++    if(hw - abs(p.x) < hh - abs(p.y)){
++        s = p.x > 0.0 ? 2.0 * hw + (p.y + hh) : 4.0 * hw + 2.0 * hh + (hh - p.y);
++    }else{
++        s = p.y < 0.0 ? (p.x + hw) : 2.0 * hw + 2.0 * hh + (hw - p.x);
++    }
++
++    float head = fract(time * params_float[12]) * perim;
++    float tail = 0.35 * perim;
++    float b1 = mod(head - s, perim);
++    float b2 = mod(head + 0.5 * perim - s, perim);
++    float st1 = exp(-3.0 * b1 / tail) + 2.0 * exp(-b1 / 6.0);
++    float st2 = exp(-3.0 * b2 / tail) + 2.0 * exp(-b2 / 6.0);
++
++    float pulse = 0.8 + 0.2 * sin(time * 2.2);
++
++    vec3 c1 = vec3(params_float[0], params_float[1], params_float[2]);
++    vec3 c2 = vec3(params_float[4], params_float[5], params_float[6]);
++
++    vec3 base = c1 * (core * pulse + glow * 0.55 * pulse);
++    vec3 streaks = (c1 * st1 + c2 * st2) * (core * 1.2 + glow * 0.8);
++    /* White-hot centre of the line near each streak head */
++    vec3 hot = vec3(1.0) * core * (exp(-b1 / 10.0) + exp(-b2 / 10.0)) * 0.8;
++
++    vec3 col = base + streaks + hot;
++    float a = clamp(max(core, glow * 0.6) * params_float[3], 0.0, 1.0);
++    gl_FragColor = vec4(col * params_float[3], a) * alpha;
++}
+diff --git a/src/wm/shaders/primitive/tron_border/vertex.glsl b/src/wm/shaders/primitive/tron_border/vertex.glsl
+new file mode 100644
+index 0000000..402494b
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_border/vertex.glsl
+@@ -0,0 +1,10 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++	gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++	v_texcoord = texcoord;
++}
++
+diff --git a/src/wm/shaders/primitive/tron_grid/fragment.glsl b/src/wm/shaders/primitive/tron_grid/fragment.glsl
+new file mode 100644
+index 0000000..93cbcb7
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_grid/fragment.glsl
+@@ -0,0 +1,144 @@
++#ifdef GL_FRAGMENT_PRECISION_HIGH
++precision highp float;
++#else
++precision mediump float;
++#endif
++/*
++ * Animated Tron grid: perspective floor, horizon glow, ridge line and
++ * two light cycles leaving trails.
++ *
++ * 0-3   world box in widget px (x, y, w, h): pans and zooms with the ZUI
++ * 4-6   grid color
++ * 7-9   accent color (second light cycle)
++ * 10    scroll speed of the floor (units per second)
++ */
++uniform float params_float[11];
++uniform float alpha;
++uniform float time;
++varying vec2 v_texcoord;
++
++uniform float width;
++uniform float height;
++
++float hash1(float n){ return fract(sin(n * 127.1) * 43758.5453); }
++
++/* Distance from p to segment ab, and position of the closest point along it */
++vec2 seg(vec2 p, vec2 a, vec2 b){
++    vec2 ab = b - a;
++    float l = max(length(ab), 1e-4);
++    float t = clamp(dot(p - a, ab) / (l * l), 0.0, 1.0);
++    return vec2(length(p - (a + ab * t)), t * l);
++}
++
++/* Light cycle trail on the floor (camera frame): brightness at floor point fp */
++float cycle(vec2 fp, float seed, float period, float pxw){
++    float ph = time / period + seed;
++    float k = floor(ph);
++    float u = fract(ph);
++
++    /* Path: runs toward the camera along Z with lateral 90 degree turns */
++    vec2 a = vec2(floor((hash1(k + seed * 7.0) - 0.5) * 14.0), 46.0);
++    float total = 0.0;
++    vec2 pts[9];
++    pts[0] = a;
++    for(int i = 1; i < 9; i++){
++        vec2 prev = pts[i - 1];
++        if(mod(float(i), 2.0) > 0.5){
++            prev.y -= 5.0 + floor(hash1(k * 13.0 + float(i) + seed) * 6.0);
++        }else{
++            float dx = floor((hash1(k * 17.0 + float(i) + seed * 3.0) - 0.5) * 10.0);
++            if(abs(prev.x + dx) > 9.0) dx = -dx;
++            prev.x += dx;
++        }
++        pts[i] = prev;
++        total += length(pts[i] - pts[i - 1]);
++    }
++
++    float head = u * total;
++    float tail = 16.0;
++    float best = 0.0;
++    float acc = 0.0;
++    for(int i = 1; i < 9; i++){
++        float l = length(pts[i] - pts[i - 1]);
++        if(acc < head){
++            vec2 b = pts[i];
++            if(acc + l > head) b = pts[i - 1] + (pts[i] - pts[i - 1]) * ((head - acc) / max(l, 1e-4));
++            vec2 d = seg(fp, pts[i - 1], b);
++            float behind = head - (acc + d.y);
++            float fade = exp(-behind / tail * 2.5);
++            float w = max(0.05, pxw);
++            float core = 1.0 - smoothstep(w, w * 2.0, d.x);
++            float glow = exp(-d.x / 0.35) * 0.5;
++            best = max(best, (core + glow) * fade);
++        }
++        acc += l;
++    }
++    return best;
++}
++
++void main() {
++    vec2 frag = v_texcoord * vec2(width, height);
++    vec3 gcol = vec3(params_float[4], params_float[5], params_float[6]);
++    vec3 acol = vec3(params_float[7], params_float[8], params_float[9]);
++
++    /* Camera from the ZUI viewport: pan sideways/forward, rise when zoomed out */
++    float bw = max(params_float[2], 1.0);
++    float bh = max(params_float[3], 1.0);
++    float pan_x = (0.5 * width - params_float[0]) / bw;
++    float pan_z = (0.5 * height - params_float[1]) / bh;
++    float vis = clamp(width / bw, 0.05, 1.0);
++    float cam_h = 0.8 + 2.5 * vis;
++
++    vec2 q = (frag - 0.5 * vec2(width, height)) / height;
++    float hy = -0.08;
++    float d = q.y - hy;
++
++    /* Sky */
++    vec3 col = mix(vec3(0.02, 0.07, 0.10), vec3(0.0, 0.005, 0.015), smoothstep(0.0, 0.5, -d));
++
++    /* Distant ridge with a lit edge */
++    float rx = q.x + pan_x * 0.6;
++    float ridge = 0.045 * (0.6 + 0.4 * sin(rx * 3.1 + 1.3)) * (0.5 + 0.5 * sin(rx * 7.3))
++                + 0.02 * sin(rx * 17.0 + 0.7);
++    ridge = max(ridge, 0.0);
++    float ry = hy - ridge;
++    if(q.y > ry && d < 0.0) col = vec3(0.0, 0.01, 0.02);
++    col += gcol * exp(-abs(q.y - ry) * height / 1.5) * 0.7 * step(0.002, ridge);
++
++    if(d > 0.0){
++        /* Floor */
++        float z = cam_h / d;
++        float x = q.x * z;
++        vec2 fp = vec2(x + pan_x * 60.0, z + time * params_float[10] + pan_z * 60.0);
++
++        float pxz = cam_h / (d * d * height);
++        float pxx = z / height;
++        vec2 cellp = abs(fract(fp) - 0.5);
++        vec2 lw = max(vec2(pxx, pxz) * 0.9, vec2(0.012));
++        float lx = 1.0 - smoothstep(0.5 - lw.x * 2.0, 0.5 - lw.x, cellp.x);
++        float lz = 1.0 - smoothstep(0.5 - lw.y * 2.0, 0.5 - lw.y, cellp.y);
++        /* Fade lines out where they get thinner than a pixel */
++        lx = (1.0 - lx) * (1.0 - smoothstep(0.08, 0.35, pxx));
++        lz = (1.0 - lz) * (1.0 - smoothstep(0.08, 0.35, pxz));
++        float grid = max(lx, lz);
++        float gglow = exp(-min(0.5 - cellp.x, 0.5 - cellp.y) / 0.08) * 0.25;
++
++        float fog = exp(-z * 0.045);
++        col = mix(col, vec3(0.0, 0.01, 0.02), 1.0 - exp(-d * 10.0));
++        col += gcol * (grid * 0.85 + gglow) * fog;
++
++        /* Light cycles run in the camera frame */
++        vec2 cp = vec2(x, z);
++        float pxw = max(pxx, pxz);
++        col += gcol * 1.3 * cycle(cp, 0.13, 9.0, pxw) * exp(-z * 0.03);
++        col += acol * 1.3 * cycle(cp, 0.61, 11.0, pxw) * exp(-z * 0.03);
++    }
++
++    /* Horizon glow */
++    float hd = abs(d);
++    col += mix(gcol, vec3(1.0), 0.5) * exp(-hd * height / 2.0) * 0.9;
++    col += gcol * exp(-hd * 14.0) * 0.25;
++
++    col = 1.0 - exp(-col * 1.4);
++    gl_FragColor = vec4(col, 1.0) * alpha;
++}
+diff --git a/src/wm/shaders/primitive/tron_grid/vertex.glsl b/src/wm/shaders/primitive/tron_grid/vertex.glsl
+new file mode 100644
+index 0000000..402494b
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_grid/vertex.glsl
+@@ -0,0 +1,10 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++	gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++	v_texcoord = texcoord;
++}
++
+diff --git a/src/wm/shaders/texture/tron/fragment_ext.glsl b/src/wm/shaders/texture/tron/fragment_ext.glsl
+new file mode 100644
+index 0000000..7899908
+--- /dev/null
++++ b/src/wm/shaders/texture/tron/fragment_ext.glsl
+@@ -0,0 +1,93 @@
++#extension GL_OES_EGL_image_external : require
++precision mediump float;
++
++varying vec2 v_texcoord;
++uniform samplerExternalOES texture0;
++uniform float alpha;
++
++uniform float offset_x;
++uniform float offset_y;
++uniform float scale_x;
++uniform float scale_y;
++uniform float width;
++uniform float height;
++
++uniform float padding_l;
++uniform float padding_t;
++uniform float padding_r;
++uniform float padding_b;
++uniform float cornerradius;
++uniform float lock_perc;
++
++uniform float time;
++uniform float fx_age;
++
++/* Rez-in: a cyan scan front sweeps down the window, leaving a wireframe
++ * construct ahead of it and the real contents behind it. */
++const float REZ_T = 0.45;
++
++float rez_hash(vec2 p){
++    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
++}
++
++vec4 rez(vec4 c, float x, float y){
++    if(fx_age >= REZ_T) return c;
++    float w = width - padding_l - padding_r;
++    float h = height - padding_t - padding_b;
++    float px = x - padding_l;
++    float py = y - padding_t;
++    float p = clamp(fx_age / REZ_T, 0.0, 1.0);
++    p = 1.0 - (1.0 - p) * (1.0 - p);
++
++    float block = rez_hash(floor(vec2(px, py) / 14.0));
++    float front = p * 1.25 - 0.12 * block;
++    float d = front - py / max(h, 1.0);
++
++    vec3 cyan = vec3(0.10, 0.85, 1.0);
++    if(d < 0.0){
++        /* Not yet rezzed: wireframe grid and outline */
++        float gx = abs(mod(px, 32.0) - 16.0);
++        float gy = abs(mod(py, 32.0) - 16.0);
++        float line = step(15.0, max(gx, gy));
++        float edge = step(min(min(px, w - px), min(py, h - py)), 2.0);
++        float a = (0.18 * line + 0.8 * edge) * (1.0 - p) * smoothstep(-0.6, 0.0, d);
++        return vec4(cyan * a, a) * alpha;
++    }
++    /* Scan front glows, contents settle from cyan tint */
++    float glow = exp(-d * 40.0);
++    float tint = exp(-d * 8.0) * (1.0 - p);
++    vec3 col = mix(c.rgb, cyan * c.a, 0.6 * tint) + cyan * glow * 0.9;
++    return vec4(col, max(c.a, glow * 0.9 * alpha));
++}
++
++void main() {
++    float x = (v_texcoord.x - offset_x)*scale_x;
++    float y = (v_texcoord.y - offset_y)*scale_y;
++
++    if(x < padding_l) discard;
++    if(y < padding_t) discard;
++    if(x > width - padding_r) discard;
++    if(y > height - padding_b) discard;
++    if(x < cornerradius + padding_l && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(width - cornerradius - padding_r, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x < cornerradius + padding_l && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - 
++                    vec2(width - cornerradius - padding_r, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++
++    gl_FragColor = rez(texture2D(texture0, v_texcoord) * alpha, x, y);
++};
+diff --git a/src/wm/shaders/texture/tron/fragment_rgba.glsl b/src/wm/shaders/texture/tron/fragment_rgba.glsl
+new file mode 100644
+index 0000000..c41f5b6
+--- /dev/null
++++ b/src/wm/shaders/texture/tron/fragment_rgba.glsl
+@@ -0,0 +1,92 @@
++precision mediump float;
++
++varying vec2 v_texcoord;
++uniform sampler2D tex;
++uniform float alpha;
++
++uniform float offset_x;
++uniform float offset_y;
++uniform float scale_x;
++uniform float scale_y;
++uniform float width;
++uniform float height;
++
++uniform float padding_l;
++uniform float padding_t;
++uniform float padding_r;
++uniform float padding_b;
++uniform float cornerradius;
++uniform float lock_perc;
++
++uniform float time;
++uniform float fx_age;
++
++/* Rez-in: a cyan scan front sweeps down the window, leaving a wireframe
++ * construct ahead of it and the real contents behind it. */
++const float REZ_T = 0.45;
++
++float rez_hash(vec2 p){
++    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
++}
++
++vec4 rez(vec4 c, float x, float y){
++    if(fx_age >= REZ_T) return c;
++    float w = width - padding_l - padding_r;
++    float h = height - padding_t - padding_b;
++    float px = x - padding_l;
++    float py = y - padding_t;
++    float p = clamp(fx_age / REZ_T, 0.0, 1.0);
++    p = 1.0 - (1.0 - p) * (1.0 - p);
++
++    float block = rez_hash(floor(vec2(px, py) / 14.0));
++    float front = p * 1.25 - 0.12 * block;
++    float d = front - py / max(h, 1.0);
++
++    vec3 cyan = vec3(0.10, 0.85, 1.0);
++    if(d < 0.0){
++        /* Not yet rezzed: wireframe grid and outline */
++        float gx = abs(mod(px, 32.0) - 16.0);
++        float gy = abs(mod(py, 32.0) - 16.0);
++        float line = step(15.0, max(gx, gy));
++        float edge = step(min(min(px, w - px), min(py, h - py)), 2.0);
++        float a = (0.18 * line + 0.8 * edge) * (1.0 - p) * smoothstep(-0.6, 0.0, d);
++        return vec4(cyan * a, a) * alpha;
++    }
++    /* Scan front glows, contents settle from cyan tint */
++    float glow = exp(-d * 40.0);
++    float tint = exp(-d * 8.0) * (1.0 - p);
++    vec3 col = mix(c.rgb, cyan * c.a, 0.6 * tint) + cyan * glow * 0.9;
++    return vec4(col, max(c.a, glow * 0.9 * alpha));
++}
++
++void main() {
++    float x = (v_texcoord.x - offset_x)*scale_x;
++    float y = (v_texcoord.y - offset_y)*scale_y;
++
++    if(x < padding_l) discard;
++    if(y < padding_t) discard;
++    if(x > width - padding_r) discard;
++    if(y > height - padding_b) discard;
++    if(x < cornerradius + padding_l && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(width - cornerradius - padding_r, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x < cornerradius + padding_l && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - 
++                    vec2(width - cornerradius - padding_r, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++
++    gl_FragColor = rez(texture2D(tex, v_texcoord) * alpha, x, y);
++}
+diff --git a/src/wm/shaders/texture/tron/fragment_rgbx.glsl b/src/wm/shaders/texture/tron/fragment_rgbx.glsl
+new file mode 100644
+index 0000000..7af91e3
+--- /dev/null
++++ b/src/wm/shaders/texture/tron/fragment_rgbx.glsl
+@@ -0,0 +1,92 @@
++precision mediump float;
++
++varying vec2 v_texcoord;
++uniform sampler2D tex;
++uniform float alpha;
++
++uniform float offset_x;
++uniform float offset_y;
++uniform float scale_x;
++uniform float scale_y;
++uniform float width;
++uniform float height;
++
++uniform float padding_l;
++uniform float padding_t;
++uniform float padding_r;
++uniform float padding_b;
++uniform float cornerradius;
++uniform float lock_perc;
++
++uniform float time;
++uniform float fx_age;
++
++/* Rez-in: a cyan scan front sweeps down the window, leaving a wireframe
++ * construct ahead of it and the real contents behind it. */
++const float REZ_T = 0.45;
++
++float rez_hash(vec2 p){
++    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
++}
++
++vec4 rez(vec4 c, float x, float y){
++    if(fx_age >= REZ_T) return c;
++    float w = width - padding_l - padding_r;
++    float h = height - padding_t - padding_b;
++    float px = x - padding_l;
++    float py = y - padding_t;
++    float p = clamp(fx_age / REZ_T, 0.0, 1.0);
++    p = 1.0 - (1.0 - p) * (1.0 - p);
++
++    float block = rez_hash(floor(vec2(px, py) / 14.0));
++    float front = p * 1.25 - 0.12 * block;
++    float d = front - py / max(h, 1.0);
++
++    vec3 cyan = vec3(0.10, 0.85, 1.0);
++    if(d < 0.0){
++        /* Not yet rezzed: wireframe grid and outline */
++        float gx = abs(mod(px, 32.0) - 16.0);
++        float gy = abs(mod(py, 32.0) - 16.0);
++        float line = step(15.0, max(gx, gy));
++        float edge = step(min(min(px, w - px), min(py, h - py)), 2.0);
++        float a = (0.18 * line + 0.8 * edge) * (1.0 - p) * smoothstep(-0.6, 0.0, d);
++        return vec4(cyan * a, a) * alpha;
++    }
++    /* Scan front glows, contents settle from cyan tint */
++    float glow = exp(-d * 40.0);
++    float tint = exp(-d * 8.0) * (1.0 - p);
++    vec3 col = mix(c.rgb, cyan * c.a, 0.6 * tint) + cyan * glow * 0.9;
++    return vec4(col, max(c.a, glow * 0.9 * alpha));
++}
++
++void main() {
++    float x = (v_texcoord.x - offset_x)*scale_x;
++    float y = (v_texcoord.y - offset_y)*scale_y;
++
++    if(x < padding_l) discard;
++    if(y < padding_t) discard;
++    if(x > width - padding_r) discard;
++    if(y > height - padding_b) discard;
++    if(x < cornerradius + padding_l && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(width - cornerradius - padding_r, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x < cornerradius + padding_l && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - 
++                    vec2(width - cornerradius - padding_r, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++
++    gl_FragColor = rez(vec4(texture2D(tex, v_texcoord).rgb, 1.0) * alpha, x, y);
++}
+diff --git a/src/wm/shaders/texture/tron/vertex.glsl b/src/wm/shaders/texture/tron/vertex.glsl
+new file mode 100644
+index 0000000..3026521
+--- /dev/null
++++ b/src/wm/shaders/texture/tron/vertex.glsl
+@@ -0,0 +1,9 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++    gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++    v_texcoord = texcoord;
++}
+diff --git a/src/wm/wm_config.c b/src/wm/wm_config.c
+index 93b9fe9..39ff590 100644
+--- a/src/wm/wm_config.c
++++ b/src/wm/wm_config.c
+@@ -23,6 +23,7 @@ void wm_config_init_default(struct wm_config *config) {
+     config->enable_xwayland = false;
+ 
+     config->callback_frequency = 10;
++    config->anim_fps = 60;
+ 
+     strcpy(config->xkb_model, "");
+     strcpy(config->xkb_layout, "");
+diff --git a/src/wm/wm_renderer.c b/src/wm/wm_renderer.c
+index 139e2e5..09fa1ac 100644
+--- a/src/wm/wm_renderer.c
++++ b/src/wm/wm_renderer.c
+@@ -4,6 +4,7 @@
+ #include <math.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <time.h>
+ #include <wayland-server.h>
+ #include <wlr/render/wlr_renderer.h>
+ #include <wlr/types/wlr_matrix.h>
+@@ -173,6 +174,8 @@ static void wm_renderer_link_texture_shader(struct wm_renderer *renderer,
+     shader->padding_b = glGetUniformLocation(shader->shader, "padding_b");
+     shader->cornerradius = glGetUniformLocation(shader->shader, "cornerradius");
+     shader->lock_perc = glGetUniformLocation(shader->shader, "lock_perc");
++    shader->time = glGetUniformLocation(shader->shader, "time");
++    shader->fx_age = glGetUniformLocation(shader->shader, "fx_age");
+ 
+     shader->pos_attrib = glGetAttribLocation(shader->shader, "pos");
+     shader->tex_attrib = glGetAttribLocation(shader->shader, "texcoord");
+@@ -242,6 +245,7 @@ void wm_renderer_add_primitive_shader(struct wm_renderer *renderer,
+     renderer->primitive_shaders[i].alpha = glGetUniformLocation(renderer->primitive_shaders[i].shader, "alpha");
+     renderer->primitive_shaders[i].width = glGetUniformLocation(renderer->primitive_shaders[i].shader, "width");
+     renderer->primitive_shaders[i].height = glGetUniformLocation(renderer->primitive_shaders[i].shader, "height");
++    renderer->primitive_shaders[i].time = glGetUniformLocation(renderer->primitive_shaders[i].shader, "time");
+     renderer->primitive_shaders[i].pos_attrib = glGetAttribLocation(renderer->primitive_shaders[i].shader, "pos");
+     renderer->primitive_shaders[i].tex_attrib = glGetAttribLocation(renderer->primitive_shaders[i].shader, "texcoord");
+ 
+@@ -382,6 +386,8 @@ static bool render_subtexture_with_matrix(
+     glUniform1f(shader->padding_b, padding_b);
+     glUniform1f(shader->cornerradius, corner_radius);
+     glUniform1f(shader->lock_perc, lock_perc);
++    glUniform1f(shader->time, renderer->time);
++    glUniform1f(shader->fx_age, renderer->fx_age);
+ 
+     const GLfloat x1 = box->x / wlr_texture->width;
+     const GLfloat y1 = box->y / wlr_texture->height;
+@@ -437,6 +443,7 @@ static void render_primitive_with_matrix(
+     glUniform1f(renderer->primitive_shader_selected->alpha, alpha);
+     glUniform1f(renderer->primitive_shader_selected->width, box->width);
+     glUniform1f(renderer->primitive_shader_selected->height, box->height);
++    glUniform1f(renderer->primitive_shader_selected->time, renderer->time);
+ 
+     if(renderer->primitive_shader_selected->n_params_int){
+         glUniform1iv(renderer->primitive_shader_selected->params_int, renderer->primitive_shader_selected->n_params_int, params_int);
+@@ -470,6 +477,8 @@ void wm_renderer_init(struct wm_renderer *renderer, struct wm_server *server) {
+     wlr_renderer_init_wl_display(renderer->wlr_renderer, server->wl_display);
+ 
+     renderer->current = NULL;
++    renderer->time = 0.f;
++    renderer->fx_age = 1000.f;
+     renderer->mode = wm_config_get_renderer_mode(server->wm_config);
+ 
+ #ifdef WM_CUSTOM_RENDERER
+@@ -627,6 +636,11 @@ void wm_renderer_to_buffer(struct wm_renderer* renderer, unsigned int buffer){
+ void wm_renderer_begin(struct wm_renderer *renderer, struct wm_output *output) {
+     renderer->current = output;
+ 
++    struct timespec now;
++    clock_gettime(CLOCK_MONOTONIC, &now);
++    renderer->time = (float)(now.tv_sec % 3600) + now.tv_nsec / 1e9f;
++    renderer->fx_age = 1000.f;
++
+ #ifdef WM_CUSTOM_RENDERER
+     if(renderer->mode == WM_RENDERER_PYWM){
+         wm_renderer_buffers_ensure(renderer, output);
+diff --git a/src/wm/wm_view.c b/src/wm/wm_view.c
+index a4003bb..04e7f0c 100644
+--- a/src/wm/wm_view.c
++++ b/src/wm/wm_view.c
+@@ -11,6 +11,8 @@
+ #include "wm/wm_seat.h"
+ #include "wm/wm_output.h"
+ #include "wm/wm_renderer.h"
++#include "wm/wm_config.h"
++#include "wm/wm_layout.h"
+ #include "wm/wm_server.h"
+ #include "wm/wm_layout.h"
+ #include "wm/wm.h"
+@@ -32,12 +34,18 @@ void wm_view_base_init(struct wm_view* view, struct wm_server* server){
+     view->inhibiting_idle = false;
+     view->accepts_input = true;
+ 
++    view->fx_started = false;
++    view->fx_timer = NULL;
++
+     view->shows_csd = false;
+ }
+ 
+ static void wm_view_base_destroy(struct wm_content* super){
+     struct wm_view* view = wm_cast(wm_view, super);
+ 
++    if(view->fx_timer) wl_event_source_remove(view->fx_timer);
++    view->fx_timer = NULL;
++
+     (view->vtable->destroy)(view);
+     wm_content_base_destroy(super);
+ }
+@@ -132,10 +140,21 @@ static void render_surface(struct wlr_surface *surface, int sx, int sy,
+ }
+ 
+ 
++/* Seconds the rez-in effect keeps the view redrawing (shader decides the look) */
++#define WM_VIEW_FX_DURATION 0.6
++
++static int fx_timer_handler(void* data){
++    struct wm_view* view = data;
++    wm_layout_damage_from(view->super.wm_server->wm_layout, &view->super, NULL);
++    return 0;
++}
++
+ static void wm_view_render(struct wm_content* super, struct wm_output* output, pixman_region32_t* output_damage, struct timespec now){
+     struct wm_view* view = wm_cast(wm_view, super);
+ 
+     if (!view->mapped) {
++        /* Rez in again when remapped */
++        view->fx_started = false;
+         return;
+     }
+ 
+@@ -172,7 +191,27 @@ static void wm_view_render(struct wm_content* super, struct wm_output* output, p
+     };
+ 
+ 
++    if(!view->fx_started && display_width > 1 && display_height > 1){
++        view->fx_started = true;
++        view->fx_start = now;
++    }
++    double fx_age = view->fx_started ?
++        (now.tv_sec - view->fx_start.tv_sec) + (now.tv_nsec - view->fx_start.tv_nsec) / 1e9 : 0.;
++
++    struct wm_renderer* renderer = output->wm_server->wm_renderer;
++    renderer->fx_age = fx_age;
+     wm_view_for_each_surface(view, render_surface, &rdata);
++    renderer->fx_age = 1000.f;
++
++    if(fx_age < WM_VIEW_FX_DURATION){
++        if(!view->fx_timer){
++            view->fx_timer = wl_event_loop_add_timer(super->wm_server->wl_event_loop, fx_timer_handler, view);
++        }
++        if(view->fx_timer){
++            int fps = super->wm_server->wm_config->anim_fps;
++            wl_event_source_timer_update(view->fx_timer, fps > 0 ? 1000 / fps : 16);
++        }
++    }
+ }
+ 
+ 
+diff --git a/src/wm/wm_widget.c b/src/wm/wm_widget.c
+index d72c15c..e776f03 100644
+--- a/src/wm/wm_widget.c
++++ b/src/wm/wm_widget.c
+@@ -1,17 +1,30 @@
+ #define _POSIX_C_SOURCE 200809L
+ 
+ #include <stdlib.h>
++#include <string.h>
+ 
+ #include "wm/wm_widget.h"
+ #include "wm/wm_server.h"
+ #include "wm/wm_output.h"
+ #include "wm/wm_renderer.h"
+ #include "wm/wm_layout.h"
++#include "wm/wm_config.h"
+ 
+ #include "wm/wm_util.h"
+ 
+ struct wm_content_vtable wm_widget_vtable;
+ 
++static int anim_timer_handler(void* data){
++    struct wm_widget* widget = data;
++    widget->anim_pending = false;
++    wm_layout_damage_from(widget->super.wm_server->wm_layout, &widget->super, NULL);
++    return 0;
++}
++
++static bool is_animated_primitive(const char* name){
++    return name && !strncmp(name, "tron_", 5);
++}
++
+ void wm_widget_init(struct wm_widget* widget, struct wm_server* server){
+     wm_content_init(&widget->super, server);
+     widget->super.vtable = &wm_widget_vtable;
+@@ -21,11 +34,15 @@ void wm_widget_init(struct wm_widget* widget, struct wm_server* server){
+     widget->primitive.name = NULL;
+     widget->primitive.params_int = NULL;
+     widget->primitive.params_float = NULL;
++
++    widget->anim_timer = NULL;
++    widget->anim_pending = false;
+ }
+ 
+ static void wm_widget_destroy(struct wm_content* super){
+     struct wm_widget* widget = wm_cast(wm_widget, super);
+     wlr_texture_destroy(widget->wlr_texture);
++    if(widget->anim_timer) wl_event_source_remove(widget->anim_timer);
+ 
+     free(widget->primitive.name);
+     free(widget->primitive.params_int);
+@@ -112,6 +129,18 @@ static void wm_widget_render(struct wm_content* super, struct wm_output* output,
+                 wm_content_get_opacity(super) * (1. - (super->lock_enabled ? 0.0 : super->wm_server->lock_perc)),
+                 widget->primitive.params_int, widget->primitive.params_float);
+ #endif
++
++        /* Keep animated primitives moving: request the next redraw */
++        if(is_animated_primitive(widget->primitive.name) && !widget->anim_pending){
++            if(!widget->anim_timer){
++                widget->anim_timer = wl_event_loop_add_timer(super->wm_server->wl_event_loop, anim_timer_handler, widget);
++            }
++            if(widget->anim_timer){
++                int fps = super->wm_server->wm_config->anim_fps;
++                wl_event_source_timer_update(widget->anim_timer, fps > 0 ? 1000 / fps : 16);
++                widget->anim_pending = true;
++            }
++        }
+     }
+ }
+ 
+-- 
+2.55.0
+

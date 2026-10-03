@@ -1,0 +1,678 @@
+From 1ba80db215a5b3a857d715e44cb3b51c0b252fdd Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Wed, 30 Sep 2026 02:31:16 -0400
+Subject: [PATCH 5/6] callbetter.com look: tron_cb_grid, tron_cb_border, cb
+ wipe
+
+Port of the callbetter.com landing page (public/lp.html): starfield and
+glows on #04060f, 48px cyan grid masked to an ellipse with one light
+cycle at a time and a build-in from the centre; panel-style focus border
+with corner brackets and a one-shot trace on focus change; windows wipe
+in from the left behind a scan line. View fx redraw extended to 0.8 s.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ src/wm/shaders/meson.build                    |   7 +-
+ .../primitive/tron_cb_border/fragment.glsl    |  96 +++++++++
+ .../primitive/tron_cb_border/vertex.glsl      |  10 +
+ .../primitive/tron_cb_grid/fragment.glsl      | 195 ++++++++++++++++++
+ .../primitive/tron_cb_grid/vertex.glsl        |  10 +
+ src/wm/shaders/texture/cb/fragment_ext.glsl   |  79 +++++++
+ src/wm/shaders/texture/cb/fragment_rgba.glsl  |  78 +++++++
+ src/wm/shaders/texture/cb/fragment_rgbx.glsl  |  78 +++++++
+ src/wm/shaders/texture/cb/vertex.glsl         |   9 +
+ src/wm/wm_view.c                              |   2 +-
+ 10 files changed, 561 insertions(+), 3 deletions(-)
+ create mode 100644 src/wm/shaders/primitive/tron_cb_border/fragment.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_border/vertex.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_grid/fragment.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_grid/vertex.glsl
+ create mode 100644 src/wm/shaders/texture/cb/fragment_ext.glsl
+ create mode 100644 src/wm/shaders/texture/cb/fragment_rgba.glsl
+ create mode 100644 src/wm/shaders/texture/cb/fragment_rgbx.glsl
+ create mode 100644 src/wm/shaders/texture/cb/vertex.glsl
+
+diff --git a/src/wm/shaders/meson.build b/src/wm/shaders/meson.build
+index d28f7f1..e09007e 100644
+--- a/src/wm/shaders/meson.build
++++ b/src/wm/shaders/meson.build
+@@ -4,7 +4,8 @@ texture_shaders = [
+   'noeffect',
+   'basic',
+   'fancy',
+-  'tron'
++  'tron',
++  'cb'
+ ]
+ 
+ primitive_shaders = [
+@@ -13,7 +14,9 @@ primitive_shaders = [
+   'rounded_corners_border',
+   'corner',
+   'tron_border',
+-  'tron_grid'
++  'tron_grid',
++  'tron_cb_grid',
++  'tron_cb_border'
+ ]
+ 
+ quad_shader_files = [
+diff --git a/src/wm/shaders/primitive/tron_cb_border/fragment.glsl b/src/wm/shaders/primitive/tron_cb_border/fragment.glsl
+new file mode 100644
+index 0000000..46e5e5b
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_border/fragment.glsl
+@@ -0,0 +1,96 @@
++precision highp float;
++/*
++ * Focus border in the style of callbetter.com panels (.cc, .cc::before):
++ * 1px cyan border, 18px corner brackets, soft outer glow, and a light that
++ * traces once around the border when focus changes (tbtrace).
++ *
++ * 0-3   colour (r, g, b, a)
++ * 4     corner radius of the border line
++ * 5     inset: widget edge to border line (room for glow and brackets)
++ * 6     glow falloff (px)
++ * 7     time focus changed (same clock as time)
++ * 8     bracket arm length (px)
++ * 9     bracket gap: brackets sit this far outside the border line (px)
++ * 10    output scale
++ */
++uniform float params_float[11];
++uniform float alpha;
++uniform float time;
++varying vec2 v_texcoord;
++
++uniform float width;
++uniform float height;
++
++const float HALF_PI = 1.5707963;
++
++float perimeter_pos(vec2 p, float a, float b, float r){
++    float lq = HALF_PI * r;
++    vec2 ap = abs(p);
++    if(ap.x > a && ap.y > b){
++        vec2 d = p - vec2(sign(p.x) * a, sign(p.y) * b);
++        float ang;
++        float base;
++        if(p.x > 0.0 && p.y < 0.0){ ang = atan(d.x, -d.y); base = 2.0 * a; }
++        else if(p.x > 0.0){ ang = atan(d.y, d.x); base = 2.0 * a + lq + 2.0 * b; }
++        else if(p.y > 0.0){ ang = atan(-d.x, d.y); base = 4.0 * a + 2.0 * b + 2.0 * lq; }
++        else { ang = atan(-d.y, -d.x); base = 4.0 * a + 4.0 * b + 3.0 * lq; }
++        return base + clamp(ang, 0.0, HALF_PI) * r;
++    }
++    bool horizontal = ap.x <= a && (ap.y > b || (a - ap.x) > (b - ap.y));
++    if(horizontal){
++        return p.y < 0.0 ? p.x + a : 2.0 * a + 2.0 * lq + 2.0 * b + (a - p.x);
++    }
++    return p.x > 0.0 ? 2.0 * a + lq + (p.y + b) : 4.0 * a + 2.0 * b + 3.0 * lq + (b - p.y);
++}
++
++void main() {
++    float sc = max(params_float[10], 0.1);
++    vec2 p = (v_texcoord - 0.5) * vec2(width, height);
++    vec2 half_ext = 0.5 * vec2(width, height) - params_float[5];
++    float r = max(min(params_float[4], min(half_ext.x, half_ext.y)), 0.0);
++    vec3 cy = vec3(params_float[0], params_float[1], params_float[2]);
++
++    vec2 q = abs(p) - half_ext + r;
++    float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
++    float dist = abs(sd);
++
++    /* 1px border and outer glow (box-shadow 0 0 60px) */
++    float line = 1.0 - smoothstep(0.5 * sc, 0.5 * sc + 1.0, dist);
++    float glow = exp(-max(sd, 0.0) / max(params_float[6], 0.1)) * step(0.0, sd);
++    float a = 0.45 * line + 0.10 * glow;
++    vec3 col = cy;
++
++    /* Corner brackets: 18px arms, 1px, just outside the border */
++    float gap = params_float[9];
++    float arm = params_float[8];
++    vec2 c = half_ext + gap;
++    vec2 ap = abs(p);
++    float th = 0.75 * sc + 0.5;
++    float bh = step(c.x - arm, ap.x) * step(ap.x, c.x + th) * (1.0 - smoothstep(th - 0.5, th + 0.5, abs(ap.y - c.y)));
++    float bv = step(c.y - arm, ap.y) * step(ap.y, c.y + th) * (1.0 - smoothstep(th - 0.5, th + 0.5, abs(ap.x - c.x)));
++    float br = max(bh, bv);
++    a = max(a, 0.9 * br);
++
++    /* Trace: one light runs once around the border after a focus change */
++    float age = mod(time - params_float[7] + 3600.0, 3600.0);
++    float T = 0.9;
++    if(age < T + 0.3){
++        float ea = half_ext.x - r;
++        float eb = half_ext.y - r;
++        float perim = 4.0 * (ea + eb) + 4.0 * HALF_PI * r;
++        float s = perimeter_pos(p, ea, eb, r);
++        float pr = clamp(age / T, 0.0, 1.0);
++        pr = 1.0 - pow(1.0 - pr, 3.0);
++        float head = pr * perim;
++        float behind = head - s;
++        float tail = 0.25 * perim;
++        float fadeout = 1.0 - smoothstep(T, T + 0.3, age);
++        float tr = step(0.0, behind) * exp(-3.0 * behind / tail) + exp(-abs(behind) / (3.0 * sc)) * 0.8;
++        float t_line = (line + 0.5 * exp(-dist / (4.0 * sc))) * tr * fadeout;
++        col = mix(col, vec3(1.0), clamp(0.6 * t_line, 0.0, 1.0));
++        a = max(a, clamp(t_line, 0.0, 1.0));
++    }
++
++    a = clamp(a * params_float[3], 0.0, 1.0);
++    gl_FragColor = vec4(col * a, a) * alpha;
++}
+diff --git a/src/wm/shaders/primitive/tron_cb_border/vertex.glsl b/src/wm/shaders/primitive/tron_cb_border/vertex.glsl
+new file mode 100644
+index 0000000..402494b
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_border/vertex.glsl
+@@ -0,0 +1,10 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++	gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++	v_texcoord = texcoord;
++}
++
+diff --git a/src/wm/shaders/primitive/tron_cb_grid/fragment.glsl b/src/wm/shaders/primitive/tron_cb_grid/fragment.glsl
+new file mode 100644
+index 0000000..285b54f
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_grid/fragment.glsl
+@@ -0,0 +1,195 @@
++#ifdef GL_FRAGMENT_PRECISION_HIGH
++precision highp float;
++#else
++precision mediump float;
++#endif
++/*
++ * callbetter.com background (public/lp.html body::before + #tron canvas):
++ * stars and two soft glows on #04060f, a 48px cyan grid masked to an
++ * ellipse, one light cycle at a time riding the grid, and the grid
++ * growing out from the centre on start.
++ *
++ * 0     output scale (px per logical px)
++ * 1-2   grid shift in logical px (parallax: camera pan * 0.35)
++ * 3     time the build-in started (same clock as time)
++ */
++uniform float params_float[4];
++uniform float alpha;
++uniform float time;
++varying vec2 v_texcoord;
++
++uniform float width;
++uniform float height;
++
++const vec3 CY = vec3(34.0, 211.0, 238.0) / 255.0;
++const vec3 OR = vec3(249.0, 115.0, 22.0) / 255.0;
++const vec3 HOT = vec3(224.0, 251.0, 255.0) / 255.0;
++const float CELL = 48.0;
++
++float hash1(float n){ return fract(sin(n * 127.1) * 43758.5453); }
++
++/* CSS radial-gradient(ellipse rx ry at c, col, transparent 70%) */
++float ellipse_glow(vec2 p, vec2 c, vec2 r){
++    return max(0.0, 1.0 - length((p - c) / r) / 0.7);
++}
++
++float star(vec2 p, vec2 at, float size){
++    return 1.0 - smoothstep(0.5 * size - 0.5, 0.5 * size + 0.5, length(p - at));
++}
++
++/* over(): paint colour c with opacity a on top of dst */
++vec3 over(vec3 dst, vec3 c, float a){ return mix(dst, c, clamp(a, 0.0, 1.0)); }
++
++/* Distance to segment ab and the position along it (0..1) */
++vec2 seg(vec2 p, vec2 a, vec2 b){
++    vec2 ab = b - a;
++    float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-4), 0.0, 1.0);
++    return vec2(length(p - (a + ab * t)), t);
++}
++
++void main() {
++    float sc = max(params_float[0], 0.1);
++    /* Work in logical px, like the CSS */
++    vec2 S = vec2(width, height) / sc;
++    vec2 p = v_texcoord * S;
++    vec2 shift = vec2(params_float[1], params_float[2]);
++
++    /* body::before */
++    vec3 col = vec3(4.0, 6.0, 15.0) / 255.0;
++    col = over(col, OR, 0.07 * ellipse_glow(p, S * vec2(0.10, 0.85), S * vec2(0.50, 0.35)));
++    col = over(col, CY, 0.09 * ellipse_glow(p, S * vec2(0.80, 0.10), S * vec2(0.60, 0.40)));
++    float st = 0.0;
++    st += 0.55 * star(p, S * vec2(0.12, 0.18), 1.0);
++    st += 0.40 * star(p, S * vec2(0.78, 0.08), 1.0);
++    st += 0.35 * star(p, S * vec2(0.33, 0.72), 1.5);
++    st += 0.50 * star(p, S * vec2(0.61, 0.44), 1.0);
++    st += 0.30 * star(p, S * vec2(0.90, 0.66), 1.0);
++    st += 0.35 * star(p, S * vec2(0.08, 0.88), 1.5);
++    st += 0.45 * star(p, S * vec2(0.47, 0.12), 1.0);
++    st += 0.40 * star(p, S * vec2(0.70, 0.90), 1.0);
++    st += 0.30 * star(p, S * vec2(0.25, 0.40), 1.0);
++    st += 0.45 * star(p, S * vec2(0.85, 0.30), 1.0);
++    st += 0.35 * star(p, S * vec2(0.55, 0.78), 1.0);
++    st += 0.30 * star(p, S * vec2(0.40, 0.95), 1.0);
++    col = over(col, vec3(1.0), st);
++
++    /* #tron canvas, masked: radial-gradient(ellipse 90% 80% at 50% 42%, #000 22%, .45 62%, transparent) */
++    float mr = length((p - S * vec2(0.5, 0.42)) / (S * vec2(0.9, 0.8)));
++    float mask = mr < 0.22 ? 1.0 : (mr < 0.62 ? mix(1.0, 0.45, (mr - 0.22) / 0.4) : mix(0.45, 0.0, clamp((mr - 0.62) / 0.38, 0.0, 1.0)));
++
++    /* Grid space: lines at x0 + k*CELL and 0.5 + k*CELL, shifted by the pan */
++    float x0 = mod(S.x * 0.5, CELL) + 0.5;
++    vec2 g = p + shift;
++    vec2 gl = vec2(g.x - x0, g.y - 0.5);
++    vec2 dl = abs(gl - CELL * floor(gl / CELL + 0.5));
++    vec3 canvas = vec3(0.0);
++    float ca = 0.0;
++
++    float age = mod(time - params_float[3] + 3600.0, 3600.0);
++    float BUILD = 1.5;
++    if(age < BUILD + 0.1){
++        /* Build-in: each line grows from the middle toward both edges */
++        float pr = clamp(age / BUILD, 0.0, 1.0);
++        float e = pr < 0.5 ? 2.0 * pr * pr : -1.0 + (4.0 - 2.0 * pr) * pr;
++        vec2 c = vec2(S.x * 0.5, S.y * 0.45);
++        float R = max(c.y, S.y - c.y);
++        /* nearest vertical line */
++        float lxs = x0 + CELL * floor((g.x - x0) / CELL + 0.5) - shift.x;
++        float qv = clamp((e - abs(lxs - c.x) / c.x * 0.55) / 0.45, 0.0, 1.0);
++        float Lv = qv * R * 1.05;
++        float onv = (1.0 - smoothstep(0.5, 1.2, dl.x)) * step(abs(p.y - c.y), Lv) * step(0.001, qv);
++        float av = (0.11 + 0.4 * (1.0 - qv)) * onv;
++        float lys = 0.5 + CELL * floor((g.y - 0.5) / CELL + 0.5) - shift.y;
++        float qh = clamp((e - abs(lys - c.y) / R * 0.55) / 0.45, 0.0, 1.0);
++        float Lh = qh * c.x * 1.05;
++        float onh = (1.0 - smoothstep(0.5, 1.2, dl.y)) * step(abs(p.x - c.x), Lh) * step(0.001, qh);
++        float ah = (0.11 + 0.4 * (1.0 - qh)) * onh;
++        ca = max(av, ah);
++        canvas = CY;
++        /* bright line ends */
++        float dv = min(length(p - vec2(lxs, c.y - Lv)), length(p - vec2(lxs, c.y + Lv)));
++        float dh = min(length(p - vec2(c.x - Lh, lys)), length(p - vec2(c.x + Lh, lys)));
++        float halo = step(0.001, qv) * 0.18 * (1.0 - qv) * (1.0 - smoothstep(5.0, 6.0, dv))
++                   + step(0.001, qh) * 0.18 * (1.0 - qh) * (1.0 - smoothstep(5.0, 6.0, dh));
++        float core = step(0.001, qv) * 0.95 * (1.0 - qv) * (1.0 - smoothstep(1.3, 2.3, dv))
++                   + step(0.001, qh) * 0.95 * (1.0 - qh) * (1.0 - smoothstep(1.3, 2.3, dh));
++        canvas = mix(canvas, HOT, clamp(halo + core, 0.0, 1.0));
++        ca = max(ca, clamp(halo + core, 0.0, 1.0));
++    }else{
++        float line = 1.0 - smoothstep(0.5, 1.2, min(dl.x, dl.y));
++        canvas = CY;
++        ca = 0.11 * line;
++
++        /* One light cycle at a time: rides a grid line, may turn 90 degrees at a crossing */
++        float PERIOD = 5.5;
++        float tt = age - BUILD;
++        float k = floor(tt / PERIOD);
++        float a = tt - k * PERIOD;
++        float r0 = hash1(k * 1.37 + 0.11);
++        float life = 2.5 + 3.0 * hash1(k * 2.71 + 0.23);
++        float spd = 150.0 + 140.0 * hash1(k * 3.19 + 0.37);
++        vec3 pc = hash1(k * 4.13 + 0.41) < 0.22 ? OR : CY;
++        bool vert = r0 < 0.5;
++        float dir = hash1(k * 5.77 + 0.53) < 0.5 ? 1.0 : -1.0;
++        /* start just off screen, on a grid line, in grid space */
++        vec2 pos;
++        vec2 dv2;
++        float ncols = floor(S.x / CELL);
++        float nrows = floor(S.y / CELL);
++        if(vert){
++            pos = vec2(x0 + floor(hash1(k * 6.31 + 0.67) * ncols) * CELL + CELL * floor(shift.x / CELL),
++                       (dir > 0.0 ? -CELL : S.y + CELL) + shift.y);
++            pos.y = 0.5 + CELL * floor((pos.y - 0.5) / CELL);
++            dv2 = vec2(0.0, dir);
++        }else{
++            pos = vec2((dir > 0.0 ? -CELL : S.x + CELL) + shift.x,
++                       0.5 + floor(hash1(k * 7.07 + 0.79) * nrows) * CELL + CELL * floor(shift.y / CELL));
++            pos.x = x0 + CELL * floor((pos.x - x0) / CELL);
++            dv2 = vec2(dir, 0.0);
++        }
++        float fade = life - a < 0.5 ? (life - a) / 0.5 : 1.0;
++        if(a < life){
++            float dist = spd * a;
++            float tail = spd * 0.8;
++            float travelled = 0.0;
++            float glow = 0.0;
++            float core = 0.0;
++            vec2 head = pos;
++            for(int i = 0; i < 12; i++){
++                float fi = float(i);
++                /* crossings before a turn: each crossing turns with p = 0.3 */
++                float u = max(hash1(k * 8.9 + fi * 1.31 + 0.97), 1e-4);
++                float n = 1.0 + floor(log(u) / log(0.7));
++                float L = n * CELL;
++                if(travelled >= dist) break;
++                float l = min(L, dist - travelled);
++                vec2 b = pos + dv2 * l;
++                if(travelled + l > dist - tail){
++                    vec2 d = seg(g, pos, b);
++                    float along = travelled + d.y * l;
++                    float pa = (dist - along) / tail;
++                    float al = (1.0 - pa) * fade * step(pa, 1.0) * step(dist - tail, along);
++                    glow = max(glow, al * 0.22 * (1.0 - smoothstep(2.0, 3.0, d.x)));
++                    core = max(core, al * 0.9 * (1.0 - smoothstep(0.5, 1.25, d.x)));
++                }
++                travelled += l;
++                pos = b;
++                head = b;
++                float tr = hash1(k * 9.7 + fi * 2.3 + 0.13);
++                dv2 = vec2(-dv2.y, dv2.x) * (tr < 0.5 ? 1.0 : -1.0);
++            }
++            float hd = length(g - head);
++            float hg = 0.3 * fade * (1.0 - smoothstep(6.5, 7.5, hd));
++            float hc = 0.95 * fade * (1.0 - smoothstep(1.7, 2.7, hd));
++            canvas = mix(canvas, pc, clamp((glow + core) / max(ca + glow + core, 1e-4), 0.0, 1.0));
++            ca = clamp(ca + glow + core, 0.0, 1.0);
++            canvas = mix(canvas, pc, hg / max(ca + hg, 1e-4));
++            ca = clamp(ca + hg, 0.0, 1.0);
++            canvas = mix(canvas, HOT, hc / max(ca + hc, 1e-4));
++            ca = clamp(ca + hc, 0.0, 1.0);
++        }
++    }
++    col = over(col, canvas, ca * mask);
++
++    gl_FragColor = vec4(col, 1.0) * alpha;
++}
+diff --git a/src/wm/shaders/primitive/tron_cb_grid/vertex.glsl b/src/wm/shaders/primitive/tron_cb_grid/vertex.glsl
+new file mode 100644
+index 0000000..402494b
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_grid/vertex.glsl
+@@ -0,0 +1,10 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++	gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++	v_texcoord = texcoord;
++}
++
+diff --git a/src/wm/shaders/texture/cb/fragment_ext.glsl b/src/wm/shaders/texture/cb/fragment_ext.glsl
+new file mode 100644
+index 0000000..5409792
+--- /dev/null
++++ b/src/wm/shaders/texture/cb/fragment_ext.glsl
+@@ -0,0 +1,79 @@
++#extension GL_OES_EGL_image_external : require
++precision mediump float;
++
++varying vec2 v_texcoord;
++uniform samplerExternalOES texture0;
++uniform float alpha;
++
++uniform float offset_x;
++uniform float offset_y;
++uniform float scale_x;
++uniform float scale_y;
++uniform float width;
++uniform float height;
++
++uniform float padding_l;
++uniform float padding_t;
++uniform float padding_r;
++uniform float padding_b;
++uniform float cornerradius;
++uniform float lock_perc;
++
++uniform float time;
++uniform float fx_age;
++
++/* callbetter.com build-in (tbwipe + tbscan): the window is wiped in from the
++ * left over 0.75s behind a thin cyan scan line. */
++const float WIPE_T = 0.75;
++
++vec4 wipe(vec4 c, float x, float y){
++    if(fx_age >= WIPE_T) return c;
++    float w = max(width - padding_l - padding_r, 1.0);
++    float px = x - padding_l;
++    float t = clamp(fx_age / WIPE_T, 0.0, 1.0);
++    /* ~ cubic-bezier(.25,.6,.2,1) */
++    float p = 1.0 - pow(1.0 - t, 3.0);
++    float front = p * w;
++    float d = front - px;
++    vec3 cyan = vec3(0.133, 0.827, 0.933);
++    float scan_a = t < 0.85 ? 1.0 : 1.0 - (t - 0.85) / 0.15;
++    float scan = (1.0 - smoothstep(1.5, 3.0, abs(d))) * scan_a;
++    float halo = exp(-abs(d) / 10.0) * 0.35 * scan_a;
++    if(d < -3.0){
++        return vec4(cyan * halo, halo) * alpha;
++    }
++    vec3 col = c.rgb + cyan * (scan + halo) * alpha;
++    return vec4(col, max(c.a, (scan + halo) * alpha));
++}
++
++void main() {
++    float x = (v_texcoord.x - offset_x)*scale_x;
++    float y = (v_texcoord.y - offset_y)*scale_y;
++
++    if(x < padding_l) discard;
++    if(y < padding_t) discard;
++    if(x > width - padding_r) discard;
++    if(y > height - padding_b) discard;
++    if(x < cornerradius + padding_l && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(width - cornerradius - padding_r, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x < cornerradius + padding_l && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - 
++                    vec2(width - cornerradius - padding_r, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++
++    gl_FragColor = wipe(texture2D(texture0, v_texcoord) * alpha, x, y);
++};
+diff --git a/src/wm/shaders/texture/cb/fragment_rgba.glsl b/src/wm/shaders/texture/cb/fragment_rgba.glsl
+new file mode 100644
+index 0000000..789cb2a
+--- /dev/null
++++ b/src/wm/shaders/texture/cb/fragment_rgba.glsl
+@@ -0,0 +1,78 @@
++precision mediump float;
++
++varying vec2 v_texcoord;
++uniform sampler2D tex;
++uniform float alpha;
++
++uniform float offset_x;
++uniform float offset_y;
++uniform float scale_x;
++uniform float scale_y;
++uniform float width;
++uniform float height;
++
++uniform float padding_l;
++uniform float padding_t;
++uniform float padding_r;
++uniform float padding_b;
++uniform float cornerradius;
++uniform float lock_perc;
++
++uniform float time;
++uniform float fx_age;
++
++/* callbetter.com build-in (tbwipe + tbscan): the window is wiped in from the
++ * left over 0.75s behind a thin cyan scan line. */
++const float WIPE_T = 0.75;
++
++vec4 wipe(vec4 c, float x, float y){
++    if(fx_age >= WIPE_T) return c;
++    float w = max(width - padding_l - padding_r, 1.0);
++    float px = x - padding_l;
++    float t = clamp(fx_age / WIPE_T, 0.0, 1.0);
++    /* ~ cubic-bezier(.25,.6,.2,1) */
++    float p = 1.0 - pow(1.0 - t, 3.0);
++    float front = p * w;
++    float d = front - px;
++    vec3 cyan = vec3(0.133, 0.827, 0.933);
++    float scan_a = t < 0.85 ? 1.0 : 1.0 - (t - 0.85) / 0.15;
++    float scan = (1.0 - smoothstep(1.5, 3.0, abs(d))) * scan_a;
++    float halo = exp(-abs(d) / 10.0) * 0.35 * scan_a;
++    if(d < -3.0){
++        return vec4(cyan * halo, halo) * alpha;
++    }
++    vec3 col = c.rgb + cyan * (scan + halo) * alpha;
++    return vec4(col, max(c.a, (scan + halo) * alpha));
++}
++
++void main() {
++    float x = (v_texcoord.x - offset_x)*scale_x;
++    float y = (v_texcoord.y - offset_y)*scale_y;
++
++    if(x < padding_l) discard;
++    if(y < padding_t) discard;
++    if(x > width - padding_r) discard;
++    if(y > height - padding_b) discard;
++    if(x < cornerradius + padding_l && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(width - cornerradius - padding_r, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x < cornerradius + padding_l && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - 
++                    vec2(width - cornerradius - padding_r, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++
++    gl_FragColor = wipe(texture2D(tex, v_texcoord) * alpha, x, y);
++}
+diff --git a/src/wm/shaders/texture/cb/fragment_rgbx.glsl b/src/wm/shaders/texture/cb/fragment_rgbx.glsl
+new file mode 100644
+index 0000000..12857da
+--- /dev/null
++++ b/src/wm/shaders/texture/cb/fragment_rgbx.glsl
+@@ -0,0 +1,78 @@
++precision mediump float;
++
++varying vec2 v_texcoord;
++uniform sampler2D tex;
++uniform float alpha;
++
++uniform float offset_x;
++uniform float offset_y;
++uniform float scale_x;
++uniform float scale_y;
++uniform float width;
++uniform float height;
++
++uniform float padding_l;
++uniform float padding_t;
++uniform float padding_r;
++uniform float padding_b;
++uniform float cornerradius;
++uniform float lock_perc;
++
++uniform float time;
++uniform float fx_age;
++
++/* callbetter.com build-in (tbwipe + tbscan): the window is wiped in from the
++ * left over 0.75s behind a thin cyan scan line. */
++const float WIPE_T = 0.75;
++
++vec4 wipe(vec4 c, float x, float y){
++    if(fx_age >= WIPE_T) return c;
++    float w = max(width - padding_l - padding_r, 1.0);
++    float px = x - padding_l;
++    float t = clamp(fx_age / WIPE_T, 0.0, 1.0);
++    /* ~ cubic-bezier(.25,.6,.2,1) */
++    float p = 1.0 - pow(1.0 - t, 3.0);
++    float front = p * w;
++    float d = front - px;
++    vec3 cyan = vec3(0.133, 0.827, 0.933);
++    float scan_a = t < 0.85 ? 1.0 : 1.0 - (t - 0.85) / 0.15;
++    float scan = (1.0 - smoothstep(1.5, 3.0, abs(d))) * scan_a;
++    float halo = exp(-abs(d) / 10.0) * 0.35 * scan_a;
++    if(d < -3.0){
++        return vec4(cyan * halo, halo) * alpha;
++    }
++    vec3 col = c.rgb + cyan * (scan + halo) * alpha;
++    return vec4(col, max(c.a, (scan + halo) * alpha));
++}
++
++void main() {
++    float x = (v_texcoord.x - offset_x)*scale_x;
++    float y = (v_texcoord.y - offset_y)*scale_y;
++
++    if(x < padding_l) discard;
++    if(y < padding_t) discard;
++    if(x > width - padding_r) discard;
++    if(y > height - padding_b) discard;
++    if(x < cornerradius + padding_l && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y < cornerradius + padding_t){
++        if(length(vec2(x, y) -
++                vec2(width - cornerradius - padding_r, cornerradius + padding_t)) > cornerradius)
++            discard;
++    }
++    if(x < cornerradius + padding_l && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) -
++                vec2(cornerradius + padding_l, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++    if(x > width - cornerradius - padding_r && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - 
++                    vec2(width - cornerradius - padding_r, height - cornerradius - padding_b)) > cornerradius)
++            discard;
++    }
++
++    gl_FragColor = wipe(vec4(texture2D(tex, v_texcoord).rgb, 1.0) * alpha, x, y);
++}
+diff --git a/src/wm/shaders/texture/cb/vertex.glsl b/src/wm/shaders/texture/cb/vertex.glsl
+new file mode 100644
+index 0000000..3026521
+--- /dev/null
++++ b/src/wm/shaders/texture/cb/vertex.glsl
+@@ -0,0 +1,9 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++    gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++    v_texcoord = texcoord;
++}
+diff --git a/src/wm/wm_view.c b/src/wm/wm_view.c
+index 625d8e7..89cac20 100644
+--- a/src/wm/wm_view.c
++++ b/src/wm/wm_view.c
+@@ -141,7 +141,7 @@ static void render_surface(struct wlr_surface *surface, int sx, int sy,
+ 
+ 
+ /* Seconds the rez-in effect keeps the view redrawing (shader decides the look) */
+-#define WM_VIEW_FX_DURATION 0.6
++#define WM_VIEW_FX_DURATION 0.8
+ 
+ static int fx_timer_handler(void* data){
+     struct wm_view* view = data;
+-- 
+2.55.0
+

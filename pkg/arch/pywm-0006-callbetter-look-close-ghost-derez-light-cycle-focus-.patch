@@ -1,0 +1,1827 @@
+From c0716b0d5a98afb2b3baaac10d72cf56ddfcbf23 Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Sat, 3 Oct 2026 02:26:22 -0400
+Subject: [PATCH 6/6] callbetter look: close ghost (derez), light cycle,
+ focus-parallax grid
+
+- wm_ghost: snapshot a window as its client drops its buffer and keep drawing
+  it briefly after close with the "<texture_shaders>_out" shader set
+  (cb_out: derez). Compositor side only; xdg and xwayland views take the
+  snapshot.
+- tron_cb_cycle primitive: a light cycle that rides from the old focused window
+  to the new one along a right-angle path through the gap, with a fading trail.
+- tron_cb_grid: focus-parallax offset and zoom parallax params (8 params, was 4)
+  for the background leaning toward the focused window and zooming with the
+  workspace; tron_cb_border reworked.
+- quad shaders: fragment_ext variant.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ include/wm/wm_ghost.h                         |  38 +++
+ include/wm/wm_renderer.h                      |  19 ++
+ include/wm/wm_view.h                          |   6 +
+ include/wm/wm_view_xdg.h                      |   1 +
+ include/wm/wm_view_xwayland.h                 |   1 +
+ meson.build                                   |   1 +
+ src/wm/shaders/generate_quad_shaders.py       |   1 +
+ src/wm/shaders/meson.build                    |   7 +-
+ .../primitive/tron_cb_border/fragment.glsl    |  97 +++++--
+ .../primitive/tron_cb_cycle/fragment.glsl     |  97 +++++++
+ .../primitive/tron_cb_cycle/vertex.glsl       |  10 +
+ .../primitive/tron_cb_grid/fragment.glsl      | 205 ++++++++-------
+ src/wm/shaders/quad/fragment_ext.glsl         |   8 +
+ .../shaders/texture/cb_out/fragment_ext.glsl  | 109 ++++++++
+ .../shaders/texture/cb_out/fragment_rgba.glsl | 108 ++++++++
+ .../shaders/texture/cb_out/fragment_rgbx.glsl | 110 ++++++++
+ src/wm/shaders/texture/cb_out/vertex.glsl     |   9 +
+ src/wm/wm_ghost.c                             | 214 +++++++++++++++
+ src/wm/wm_renderer.c                          | 247 ++++++++++++++++--
+ src/wm/wm_view.c                              |   4 +
+ src/wm/wm_view_xdg.c                          |  15 ++
+ src/wm/wm_view_xwayland.c                     |  19 +-
+ 22 files changed, 1188 insertions(+), 138 deletions(-)
+ create mode 100644 include/wm/wm_ghost.h
+ create mode 100644 src/wm/shaders/primitive/tron_cb_cycle/fragment.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_cycle/vertex.glsl
+ create mode 100644 src/wm/shaders/quad/fragment_ext.glsl
+ create mode 100644 src/wm/shaders/texture/cb_out/fragment_ext.glsl
+ create mode 100644 src/wm/shaders/texture/cb_out/fragment_rgba.glsl
+ create mode 100644 src/wm/shaders/texture/cb_out/fragment_rgbx.glsl
+ create mode 100644 src/wm/shaders/texture/cb_out/vertex.glsl
+ create mode 100644 src/wm/wm_ghost.c
+
+diff --git a/include/wm/wm_ghost.h b/include/wm/wm_ghost.h
+new file mode 100644
+index 0000000..bbf18cb
+--- /dev/null
++++ b/include/wm/wm_ghost.h
+@@ -0,0 +1,38 @@
++#ifndef WM_GHOST_H
++#define WM_GHOST_H
++
++#include <time.h>
++#include <wayland-server.h>
++
++#include "wm_content.h"
++
++struct wm_view;
++struct wm_output;
++struct wm_renderer_texture_shaders;
++
++/*
++ * Snapshot of a window that just closed, drawn for a short while with the
++ * "<texture_shaders>_out" shader set (e.g. cb_out: derez). Purely compositor
++ * side; the python layout never sees it.
++ */
++struct wm_ghost {
++    struct wm_content super;
++
++    unsigned int tex;
++    int tex_w;
++    int tex_h;
++    struct wm_output* output;
++    struct wm_renderer_texture_shaders* shaders;
++
++    struct timespec start;
++    struct wl_event_source* timer;
++};
++
++/* Call from the view's unmap handler, before mapped is cleared */
++void wm_ghost_from_view(struct wm_view* view);
++
++/* The client is about to drop its buffer: snapshot now, the unmap uses it */
++void wm_ghost_prepare(struct wm_view* view);
++void wm_ghost_drop_prepared(struct wm_view* view);
++
++#endif
+diff --git a/include/wm/wm_renderer.h b/include/wm/wm_renderer.h
+index 7786f5e..b9350de 100644
+--- a/include/wm/wm_renderer.h
++++ b/include/wm/wm_renderer.h
+@@ -124,6 +124,13 @@ struct wm_renderer {
+         GLint pos_attrib;
+         GLint tex_attrib;
+     } quad_shader;
++    /* Same for external (dmabuf) textures, 0 if unsupported; used by view snapshots */
++    struct {
++        GLuint shader;
++        GLint tex;
++        GLint pos_attrib;
++        GLint tex_attrib;
++    } quad_ext_shader;
+     struct {
+         GLuint shader;
+         GLint tex;
+@@ -186,6 +193,18 @@ void wm_renderer_add_primitive_shader(struct wm_renderer* renderer, const char*
+ #endif
+ 
+ void wm_renderer_select_texture_shaders(struct wm_renderer* renderer, const char* name);
++
++#ifdef WM_CUSTOM_RENDERER
++struct wm_view;
++struct wm_renderer_texture_shaders* wm_renderer_find_texture_shaders(struct wm_renderer* renderer, const char* name);
++/* Render the view's surfaces into a new RGBA texture (output px); 0 if nothing to draw */
++unsigned int wm_renderer_snapshot_view(struct wm_renderer* renderer, struct wm_view* view, struct wm_output* output, int* width, int* height);
++void wm_renderer_delete_texture(struct wm_renderer* renderer, unsigned int tex);
++/* Like wm_renderer_render_texture_at for a raw RGBA GL_TEXTURE_2D */
++void wm_renderer_render_gl_texture_at(struct wm_renderer* renderer, pixman_region32_t* damage,
++        unsigned int tex, int tex_w, int tex_h, struct wlr_box* box, double opacity,
++        struct wlr_box* mask, double corner_radius, double lock_perc);
++#endif
+ void wm_renderer_select_primitive_shader(struct wm_renderer* renderer, const char* name);
+ bool wm_renderer_check_primitive_params(struct wm_renderer* renderer, int n_int, int n_float);
+ 
+diff --git a/include/wm/wm_view.h b/include/wm/wm_view.h
+index 0b39b52..b76c084 100644
+--- a/include/wm/wm_view.h
++++ b/include/wm/wm_view.h
+@@ -38,6 +38,12 @@ struct wm_view {
+     bool fx_started;
+     struct timespec fx_start;
+     struct wl_event_source* fx_timer;
++
++    /* Snapshot taken as the client dropped its buffer, for the ghost drawn after close (wm_ghost) */
++    unsigned int ghost_tex;
++    int ghost_w;
++    int ghost_h;
++    struct timespec ghost_at;
+ };
+ 
+ void wm_view_base_init(struct wm_view* view, struct wm_server* server);
+diff --git a/include/wm/wm_view_xdg.h b/include/wm/wm_view_xdg.h
+index e6f2bb6..795cf0d 100644
+--- a/include/wm/wm_view_xdg.h
++++ b/include/wm/wm_view_xdg.h
+@@ -78,6 +78,7 @@ struct wm_view_xdg {
+ 
+     struct wl_listener surface_configure;
+     struct wl_listener surface_ack_configure;
++    struct wl_listener surface_client_commit;
+     struct wl_listener surface_commit;
+ 
+     struct wl_listener deco_request_mode;
+diff --git a/include/wm/wm_view_xwayland.h b/include/wm/wm_view_xwayland.h
+index eaaf225..36de72a 100644
+--- a/include/wm/wm_view_xwayland.h
++++ b/include/wm/wm_view_xwayland.h
+@@ -46,6 +46,7 @@ struct wm_view_xwayland {
+     struct wl_listener unmap;
+     struct wl_listener destroy;
+     struct wl_listener surface_commit;
++    struct wl_listener surface_client_commit;
+ };
+ 
+ void wm_view_xwayland_init(struct wm_view_xwayland* view, struct wm_server* server, struct wlr_xwayland_surface* surface);
+diff --git a/meson.build b/meson.build
+index e4cf4cb..cb2a580 100644
+--- a/meson.build
++++ b/meson.build
+@@ -87,6 +87,7 @@ sources = [
+     'src/wm/wm_view_xdg.c',
+     'src/wm/wm_view_layer.c',
+     'src/wm/wm_widget.c',
++    'src/wm/wm_ghost.c',
+     'src/wm/wm_config.c',
+     'src/wm/wm_idle_inhibit.c',
+     'src/wm/wm_drag.c',
+diff --git a/src/wm/shaders/generate_quad_shaders.py b/src/wm/shaders/generate_quad_shaders.py
+index 99b31ee..d1738fe 100644
+--- a/src/wm/shaders/generate_quad_shaders.py
++++ b/src/wm/shaders/generate_quad_shaders.py
+@@ -8,6 +8,7 @@ files = [
+     'fragment.glsl',
+     'fragment_downsample.glsl',
+     'fragment_upsample.glsl',
++    'fragment_ext.glsl',
+ ]
+ 
+ with open(sys.argv[1], "w") as out:
+diff --git a/src/wm/shaders/meson.build b/src/wm/shaders/meson.build
+index e09007e..2bb214d 100644
+--- a/src/wm/shaders/meson.build
++++ b/src/wm/shaders/meson.build
+@@ -5,7 +5,8 @@ texture_shaders = [
+   'basic',
+   'fancy',
+   'tron',
+-  'cb'
++  'cb',
++  'cb_out'
+ ]
+ 
+ primitive_shaders = [
+@@ -16,7 +17,8 @@ primitive_shaders = [
+   'tron_border',
+   'tron_grid',
+   'tron_cb_grid',
+-  'tron_cb_border'
++  'tron_cb_border',
++  'tron_cb_cycle'
+ ]
+ 
+ quad_shader_files = [
+@@ -24,6 +26,7 @@ quad_shader_files = [
+   'quad/fragment.glsl',
+   'quad/fragment_downsample.glsl',
+   'quad/fragment_upsample.glsl',
++  'quad/fragment_ext.glsl',
+ ]
+ 
+ texture_shader_files = []
+diff --git a/src/wm/shaders/primitive/tron_cb_border/fragment.glsl b/src/wm/shaders/primitive/tron_cb_border/fragment.glsl
+index 46e5e5b..2a5d877 100644
+--- a/src/wm/shaders/primitive/tron_cb_border/fragment.glsl
++++ b/src/wm/shaders/primitive/tron_cb_border/fragment.glsl
+@@ -1,19 +1,24 @@
+ precision highp float;
+ /*
+  * Focus border in the style of callbetter.com panels (.cc, .cc::before):
+- * 1px cyan border, 18px corner brackets, soft outer glow, and a light that
+- * traces once around the border when focus changes (tbtrace).
++ * 1px cyan border, 18px corner brackets, soft outer glow, two streaks
++ * spinning slowly around it (the tron look). On focus (a new window gets
++ * focus too) it builds in: the two streaks each race half a lap and draw
++ * the border behind them, and the brackets flicker on (tbflick) as a streak
++ * passes them.
+  *
+  * 0-3   colour (r, g, b, a)
+  * 4     corner radius of the border line
+  * 5     inset: widget edge to border line (room for glow and brackets)
+  * 6     glow falloff (px)
+- * 7     time focus changed (same clock as time)
++ * 7     time focus changed (same clock as time), < 0 once the build-in is over
+  * 8     bracket arm length (px)
+  * 9     bracket gap: brackets sit this far outside the border line (px)
+  * 10    output scale
++ * 11-13 colour of the second spinning streak (the first uses the border colour)
++ * 14    laps per second of the spinning streaks
+  */
+-uniform float params_float[11];
++uniform float params_float[15];
+ uniform float alpha;
+ uniform float time;
+ varying vec2 v_texcoord;
+@@ -43,6 +48,29 @@ float perimeter_pos(vec2 p, float a, float b, float r){
+     return p.x > 0.0 ? 2.0 * a + lq + (p.y + b) : 4.0 * a + 2.0 * b + 3.0 * lq + (b - p.y);
+ }
+ 
++/* Brightness of a streak whose head is delta px ahead (delta > 0: behind the head) */
++vec2 streak(float delta, float perim){
++    float tail = 0.35 * perim;
++    float behind = max(delta, 0.0);
++    float ahead = max(-delta, 0.0);
++    float body = exp(-3.0 * behind / tail) * (1.0 - smoothstep(tail, 0.5 * perim, behind)) * exp(-ahead / 3.0);
++    float head = exp(-abs(delta) / 8.0);
++    return vec2(body, head);
++}
++
++/* tbflick keyframes: 0 0, 9% 1, 12% .15, 18% 1, 24% .4, 30% 1, 42% .75, 50% 1 */
++float flick(float x){
++    if(x <= 0.0) return 0.0;
++    if(x < 0.09) return x / 0.09;
++    if(x < 0.12) return mix(1.0, 0.15, (x - 0.09) / 0.03);
++    if(x < 0.18) return mix(0.15, 1.0, (x - 0.12) / 0.06);
++    if(x < 0.24) return mix(1.0, 0.4, (x - 0.18) / 0.06);
++    if(x < 0.30) return mix(0.4, 1.0, (x - 0.24) / 0.06);
++    if(x < 0.42) return mix(1.0, 0.75, (x - 0.30) / 0.12);
++    if(x < 0.50) return mix(0.75, 1.0, (x - 0.42) / 0.08);
++    return 1.0;
++}
++
+ void main() {
+     float sc = max(params_float[10], 0.1);
+     vec2 p = (v_texcoord - 0.5) * vec2(width, height);
+@@ -54,10 +82,27 @@ void main() {
+     float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+     float dist = abs(sd);
+ 
++    /* Build-in after a focus change or a new window: the streaks start half a lap
++       behind their spinning positions, race to catch up, and draw the line behind them */
++    /* params 7 < 0: no build-in running */
++    float age = params_float[7] < 0.0 ? 1e4 : mod(time - params_float[7] + 3600.0, 3600.0);
++    float T = 0.45;
++    float ea = half_ext.x - r;
++    float eb = half_ext.y - r;
++    float perim = 4.0 * (ea + eb) + 4.0 * HALF_PI * r;
++    float s = perimeter_pos(p, ea, eb, r);
++    float pr = 1.0 - pow(1.0 - clamp(age / T, 0.0, 1.0), 3.0);
++    float head = fract(time * params_float[14]) * perim;
++    float hb = head - (1.0 - pr) * 0.5 * perim;
++    float run = pr * 0.5 * perim;
++    float drawn = max(1.0 - smoothstep(run - 1.0, run + 1.0, mod(hb - s, perim)),
++                      1.0 - smoothstep(run - 1.0, run + 1.0, mod(hb + 0.5 * perim - s, perim)));
++    if(age >= T) drawn = 1.0;
++
+     /* 1px border and outer glow (box-shadow 0 0 60px) */
+     float line = 1.0 - smoothstep(0.5 * sc, 0.5 * sc + 1.0, dist);
+     float glow = exp(-max(sd, 0.0) / max(params_float[6], 0.1)) * step(0.0, sd);
+-    float a = 0.45 * line + 0.10 * glow;
++    float a = (0.45 * line + 0.10 * glow * smoothstep(0.0, T, age)) * drawn;
+     vec3 col = cy;
+ 
+     /* Corner brackets: 18px arms, 1px, just outside the border */
+@@ -69,28 +114,26 @@ void main() {
+     float bh = step(c.x - arm, ap.x) * step(ap.x, c.x + th) * (1.0 - smoothstep(th - 0.5, th + 0.5, abs(ap.y - c.y)));
+     float bv = step(c.y - arm, ap.y) * step(ap.y, c.y + th) * (1.0 - smoothstep(th - 0.5, th + 0.5, abs(ap.x - c.x)));
+     float br = max(bh, bv);
+-    a = max(a, 0.9 * br);
++    /* when the first (eased) streak reaches this corner; they start at head and head - perim/2 */
++    float cp = perimeter_pos(sign(p) * half_ext, ea, eb, r);
++    float fc = min(mod(cp - head + 0.5 * perim, perim), mod(cp - head, perim)) / max(0.5 * perim, 1.0);
++    float tc = T * (1.0 - pow(max(1.0 - fc, 0.0), 1.0 / 3.0));
++    a = max(a, 0.9 * br * flick((age - tc) / 0.6));
+ 
+-    /* Trace: one light runs once around the border after a focus change */
+-    float age = mod(time - params_float[7] + 3600.0, 3600.0);
+-    float T = 0.9;
+-    if(age < T + 0.3){
+-        float ea = half_ext.x - r;
+-        float eb = half_ext.y - r;
+-        float perim = 4.0 * (ea + eb) + 4.0 * HALF_PI * r;
+-        float s = perimeter_pos(p, ea, eb, r);
+-        float pr = clamp(age / T, 0.0, 1.0);
+-        pr = 1.0 - pow(1.0 - pr, 3.0);
+-        float head = pr * perim;
+-        float behind = head - s;
+-        float tail = 0.25 * perim;
+-        float fadeout = 1.0 - smoothstep(T, T + 0.3, age);
+-        float tr = step(0.0, behind) * exp(-3.0 * behind / tail) + exp(-abs(behind) / (3.0 * sc)) * 0.8;
+-        float t_line = (line + 0.5 * exp(-dist / (4.0 * sc))) * tr * fadeout;
+-        col = mix(col, vec3(1.0), clamp(0.6 * t_line, 0.0, 1.0));
+-        a = max(a, clamp(t_line, 0.0, 1.0));
+-    }
++    /* Premultiplied from here on */
++    vec3 pm = col * a;
++
++    /* Two streaks, half a lap apart, spinning slowly */
++    vec2 st1 = streak(mod(hb - s + 0.5 * perim, perim) - 0.5 * perim, perim);
++    vec2 st2 = streak(mod(hb - s, perim) - 0.5 * perim, perim);
++    float band = 1.2 * line + 0.6 * exp(-dist / (4.0 * sc));
++    float s1 = (st1.x + 1.5 * st1.y) * band;
++    float s2 = (st2.x + 1.5 * st2.y) * band;
++    vec3 c2 = vec3(params_float[11], params_float[12], params_float[13]);
++    pm += cy * s1 + c2 * s2 + vec3(0.8) * line * (st1.y + st2.y);
++    a = max(a, clamp(0.9 * (s1 + s2), 0.0, 1.0));
+ 
+-    a = clamp(a * params_float[3], 0.0, 1.0);
+-    gl_FragColor = vec4(col * a, a) * alpha;
++    float A = params_float[3];
++    a = clamp(a * A, 0.0, 1.0);
++    gl_FragColor = vec4(clamp(pm * A, 0.0, 1.0), a) * alpha;
+ }
+diff --git a/src/wm/shaders/primitive/tron_cb_cycle/fragment.glsl b/src/wm/shaders/primitive/tron_cb_cycle/fragment.glsl
+new file mode 100644
+index 0000000..355f853
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_cycle/fragment.glsl
+@@ -0,0 +1,97 @@
++precision highp float;
++/*
++ * Light cycle that rides from the old focused window to the new one on a
++ * focus change: a packet on a three-segment right-angle path through the
++ * gap, with a fading trail, drawn like the light cycles of callbetter.com.
++ *
++ * 0-7   path points p0..p3, widget-local px
++ * 8-10  colour (r, g, b)
++ * 11    start time (same clock as time)
++ * 12    travel time (s)
++ * 13    output scale
++ */
++uniform float params_float[14];
++uniform float alpha;
++uniform float time;
++varying vec2 v_texcoord;
++
++uniform float width;
++uniform float height;
++
++const vec3 HOT = vec3(224.0, 251.0, 255.0) / 255.0;
++
++/* Distance to segment ab and the position along it (0..1) */
++vec2 seg(vec2 p, vec2 a, vec2 b){
++    vec2 ab = b - a;
++    float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-4), 0.0, 1.0);
++    return vec2(length(p - (a + ab * t)), t);
++}
++
++void main() {
++    float sc = max(params_float[13], 0.1);
++    vec2 p = v_texcoord * vec2(width, height);
++    vec2 P0 = vec2(params_float[0], params_float[1]);
++    vec2 P1 = vec2(params_float[2], params_float[3]);
++    vec2 P2 = vec2(params_float[4], params_float[5]);
++    vec2 P3 = vec2(params_float[6], params_float[7]);
++    vec3 pc = vec3(params_float[8], params_float[9], params_float[10]);
++    float T = max(params_float[12], 0.01);
++
++    float L1 = length(P1 - P0);
++    float L2 = length(P2 - P1);
++    float L3 = length(P3 - P2);
++    float total = max(L1 + L2 + L3, 1.0);
++
++    float age = mod(time - params_float[11] + 3600.0, 3600.0);
++    float FADE = 0.35;
++    if(age > T + FADE){
++        discard;
++    }
++    float pr = clamp(age / T, 0.0, 1.0);
++    pr = pr * pr * (3.0 - 2.0 * pr);
++    float head = pr * total;
++    /* The tail keeps catching up after arrival, then everything fades */
++    float tail = max(0.8 * total, 160.0 * sc) * (1.0 - smoothstep(T, T + FADE, age));
++    float fade = 1.0 - smoothstep(T + 0.5 * FADE, T + FADE, age);
++
++    float glow = 0.0;
++    float core = 0.0;
++    vec2 d;
++    float behind;
++    float al;
++
++    d = seg(p, P0, P1);
++    behind = head - d.y * L1;
++    al = step(0.0, behind) * max(1.0 - behind / max(tail, 1e-3), 0.0);
++    glow = max(glow, al * 0.3 * exp(-d.x / (3.0 * sc)));
++    core = max(core, al * 0.9 * (1.0 - smoothstep(0.75 * sc, 0.75 * sc + 1.0, d.x)));
++
++    d = seg(p, P1, P2);
++    behind = head - (L1 + d.y * L2);
++    al = step(0.0, behind) * max(1.0 - behind / max(tail, 1e-3), 0.0);
++    glow = max(glow, al * 0.3 * exp(-d.x / (3.0 * sc)));
++    core = max(core, al * 0.9 * (1.0 - smoothstep(0.75 * sc, 0.75 * sc + 1.0, d.x)));
++
++    d = seg(p, P2, P3);
++    behind = head - (L1 + L2 + d.y * L3);
++    al = step(0.0, behind) * max(1.0 - behind / max(tail, 1e-3), 0.0);
++    glow = max(glow, al * 0.3 * exp(-d.x / (3.0 * sc)));
++    core = max(core, al * 0.9 * (1.0 - smoothstep(0.75 * sc, 0.75 * sc + 1.0, d.x)));
++
++    /* Packet: soft halo and a white-hot dot at the head */
++    vec2 hp;
++    if(head <= L1){
++        hp = P0 + (P1 - P0) * (head / max(L1, 1e-3));
++    }else if(head <= L1 + L2){
++        hp = P1 + (P2 - P1) * ((head - L1) / max(L2, 1e-3));
++    }else{
++        hp = P2 + (P3 - P2) * ((head - L1 - L2) / max(L3, 1e-3));
++    }
++    float hd = length(p - hp);
++    float hg = 0.35 * (1.0 - smoothstep(6.5 * sc, 7.5 * sc, hd));
++    float hc = 0.95 * (1.0 - smoothstep(1.7 * sc, 2.7 * sc, hd));
++
++    vec3 pm = pc * (glow + core + hg) + HOT * hc;
++    float a = clamp(glow + core + hg + hc, 0.0, 1.0) * fade;
++    gl_FragColor = vec4(clamp(pm * fade, 0.0, 1.0), a) * alpha;
++}
+diff --git a/src/wm/shaders/primitive/tron_cb_cycle/vertex.glsl b/src/wm/shaders/primitive/tron_cb_cycle/vertex.glsl
+new file mode 100644
+index 0000000..402494b
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_cycle/vertex.glsl
+@@ -0,0 +1,10 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++	gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++	v_texcoord = texcoord;
++}
++
+diff --git a/src/wm/shaders/primitive/tron_cb_grid/fragment.glsl b/src/wm/shaders/primitive/tron_cb_grid/fragment.glsl
+index 285b54f..adae8eb 100644
+--- a/src/wm/shaders/primitive/tron_cb_grid/fragment.glsl
++++ b/src/wm/shaders/primitive/tron_cb_grid/fragment.glsl
+@@ -6,14 +6,17 @@ precision mediump float;
+ /*
+  * callbetter.com background (public/lp.html body::before + #tron canvas):
+  * stars and two soft glows on #04060f, a 48px cyan grid masked to an
+- * ellipse, one light cycle at a time riding the grid, and the grid
+- * growing out from the centre on start.
++ * ellipse, light cycles riding the grid (one per grid block, about two on
++ * screen), and the grid growing out from the centre on start.
+  *
+  * 0     output scale (px per logical px)
+  * 1-2   grid shift in logical px (parallax: camera pan * 0.35)
+  * 3     time the build-in started (same clock as time)
++ * 4-5   star shift in logical px (far parallax layer)
++ * 6     grid zoom (screen px per grid px), about the screen centre
++ * 7     star zoom
+  */
+-uniform float params_float[4];
++uniform float params_float[8];
+ uniform float alpha;
+ uniform float time;
+ varying vec2 v_texcoord;
+@@ -47,6 +50,78 @@ vec2 seg(vec2 p, vec2 a, vec2 b){
+     return vec2(length(p - (a + ab * t)), t);
+ }
+ 
++/* Block of grid cells holding one light cycle: cycles live in grid space, so they
++ * pan and zoom exactly with their lines; about two blocks fit on screen at zoom 1 */
++const vec2 BLOCK = vec2(38.0, 24.0);
++const float PERIOD = 5.5;
++
++float hash2(vec2 b, float n){ return hash1(b.x * 37.17 + b.y * 101.31 + n); }
++
++/*
++ * Light cycle of block b at grid point g (grid units = logical px at zoom 1).
++ * Returns (trail alpha, head halo alpha, head core alpha) and the colour.
++ */
++vec3 cycle(vec2 g, vec2 b, vec2 org, float age, float z, out vec3 pc){
++    float toff = hash2(b, 0.5) * PERIOD;
++    float tt = age + toff;
++    float k = floor(tt / PERIOD);
++    float a = tt - k * PERIOD;
++    float sd = k * 13.7;
++
++    pc = hash2(b, sd + 0.41) < 0.22 ? OR : CY;
++    float spd = 150.0 + 140.0 * hash2(b, sd + 0.37);
++    float fade = smoothstep(0.0, 0.4, a) * (PERIOD - a < 0.5 ? (PERIOD - a) / 0.5 : 1.0);
++
++    /* Block in cells, cycle stays one cell inside it */
++    vec2 lo = org + CELL;
++    vec2 hi = org + (BLOCK - 1.0) * CELL;
++    vec2 ctr = 0.5 * (lo + hi);
++    vec2 pos = org + CELL * floor(vec2(0.25 + 0.5 * hash2(b, sd + 0.67), 0.25 + 0.5 * hash2(b, sd + 0.79)) * BLOCK);
++    float r = hash2(b, sd + 0.53);
++    vec2 dv = r < 0.25 ? vec2(1.0, 0.0) : (r < 0.5 ? vec2(-1.0, 0.0) : (r < 0.75 ? vec2(0.0, 1.0) : vec2(0.0, -1.0)));
++
++    float dist = spd * a;
++    float tail = spd * 0.8;
++    float travelled = 0.0;
++    float glow = 0.0;
++    float core = 0.0;
++    vec2 head = pos;
++    for(int i = 0; i < 14; i++){
++        if(travelled >= dist) break;
++        float fi = float(i);
++        /* crossings before a turn: each crossing turns with p = 0.3 */
++        float u = max(hash2(b, sd + fi * 1.31 + 0.97), 1e-4);
++        float n = min(1.0 + floor(log(u) / log(0.7)), 8.0);
++        /* stay inside the block */
++        float room = dv.x > 0.5 ? hi.x - pos.x : (dv.x < -0.5 ? pos.x - lo.x : (dv.y > 0.5 ? hi.y - pos.y : pos.y - lo.y));
++        float L = max(min(n * CELL, room), 0.0);
++        float l = min(L, dist - travelled);
++        vec2 e = pos + dv * l;
++        if(l > 0.0 && travelled + l > dist - tail){
++            vec2 d = seg(g, pos, e);
++            float along = travelled + d.y * l;
++            float pa = (dist - along) / tail;
++            float al = (1.0 - pa) * step(pa, 1.0);
++            float dpx = d.x * z;
++            glow = max(glow, al * 0.22 * (1.0 - smoothstep(2.0, 3.0, dpx)));
++            core = max(core, al * 0.9 * (1.0 - smoothstep(0.5, 1.25, dpx)));
++        }
++        travelled += l;
++        pos = e;
++        head = e;
++        /* turn 90 degrees, steering back toward the middle of the block */
++        vec2 nd = vec2(-dv.y, dv.x);
++        float toward = dot(ctr - pos, nd);
++        float rnd = hash2(b, sd + fi * 2.3 + 0.13);
++        float sgn = abs(toward) > 0.3 * dot(abs(nd), hi - lo) ? sign(toward) : (rnd < 0.5 ? 1.0 : -1.0);
++        dv = nd * sgn;
++    }
++    float hd = length(g - head) * z;
++    float hg = 0.3 * (1.0 - smoothstep(6.5, 7.5, hd));
++    float hc = 0.95 * (1.0 - smoothstep(1.7, 2.7, hd));
++    return vec3(max(glow, core), hg, hc) * fade;
++}
++
+ void main() {
+     float sc = max(params_float[0], 0.1);
+     /* Work in logical px, like the CSS */
+@@ -58,30 +133,36 @@ void main() {
+     vec3 col = vec3(4.0, 6.0, 15.0) / 255.0;
+     col = over(col, OR, 0.07 * ellipse_glow(p, S * vec2(0.10, 0.85), S * vec2(0.50, 0.35)));
+     col = over(col, CY, 0.09 * ellipse_glow(p, S * vec2(0.80, 0.10), S * vec2(0.60, 0.40)));
++    /* Stars sit on a far layer: they drift less than the grid and wrap at the edges */
++    float zs = max(params_float[7], 0.05);
++    vec2 ps = mod((p - 0.5 * S) / zs + 0.5 * S + vec2(params_float[4], params_float[5]), S);
+     float st = 0.0;
+-    st += 0.55 * star(p, S * vec2(0.12, 0.18), 1.0);
+-    st += 0.40 * star(p, S * vec2(0.78, 0.08), 1.0);
+-    st += 0.35 * star(p, S * vec2(0.33, 0.72), 1.5);
+-    st += 0.50 * star(p, S * vec2(0.61, 0.44), 1.0);
+-    st += 0.30 * star(p, S * vec2(0.90, 0.66), 1.0);
+-    st += 0.35 * star(p, S * vec2(0.08, 0.88), 1.5);
+-    st += 0.45 * star(p, S * vec2(0.47, 0.12), 1.0);
+-    st += 0.40 * star(p, S * vec2(0.70, 0.90), 1.0);
+-    st += 0.30 * star(p, S * vec2(0.25, 0.40), 1.0);
+-    st += 0.45 * star(p, S * vec2(0.85, 0.30), 1.0);
+-    st += 0.35 * star(p, S * vec2(0.55, 0.78), 1.0);
+-    st += 0.30 * star(p, S * vec2(0.40, 0.95), 1.0);
++    st += 0.55 * star(ps, S * vec2(0.12, 0.18), 1.0 / zs);
++    st += 0.40 * star(ps, S * vec2(0.78, 0.08), 1.0 / zs);
++    st += 0.35 * star(ps, S * vec2(0.33, 0.72), 1.5 / zs);
++    st += 0.50 * star(ps, S * vec2(0.61, 0.44), 1.0 / zs);
++    st += 0.30 * star(ps, S * vec2(0.90, 0.66), 1.0 / zs);
++    st += 0.35 * star(ps, S * vec2(0.08, 0.88), 1.5 / zs);
++    st += 0.45 * star(ps, S * vec2(0.47, 0.12), 1.0 / zs);
++    st += 0.40 * star(ps, S * vec2(0.70, 0.90), 1.0 / zs);
++    st += 0.30 * star(ps, S * vec2(0.25, 0.40), 1.0 / zs);
++    st += 0.45 * star(ps, S * vec2(0.85, 0.30), 1.0 / zs);
++    st += 0.35 * star(ps, S * vec2(0.55, 0.78), 1.0 / zs);
++    st += 0.30 * star(ps, S * vec2(0.40, 0.95), 1.0 / zs);
+     col = over(col, vec3(1.0), st);
+ 
+     /* #tron canvas, masked: radial-gradient(ellipse 90% 80% at 50% 42%, #000 22%, .45 62%, transparent) */
+     float mr = length((p - S * vec2(0.5, 0.42)) / (S * vec2(0.9, 0.8)));
+     float mask = mr < 0.22 ? 1.0 : (mr < 0.62 ? mix(1.0, 0.45, (mr - 0.22) / 0.4) : mix(0.45, 0.0, clamp((mr - 0.62) / 0.38, 0.0, 1.0)));
+ 
+-    /* Grid space: lines at x0 + k*CELL and 0.5 + k*CELL, shifted by the pan */
++    /* Grid space: lines at x0 + k*CELL and 0.5 + k*CELL, shifted by the pan, zoomed about the centre */
++    float zg = max(params_float[6], 0.05);
++    vec2 C = 0.5 * S;
++    vec2 pz = (p - C) / zg + C;
+     float x0 = mod(S.x * 0.5, CELL) + 0.5;
+-    vec2 g = p + shift;
++    vec2 g = pz + shift;
+     vec2 gl = vec2(g.x - x0, g.y - 0.5);
+-    vec2 dl = abs(gl - CELL * floor(gl / CELL + 0.5));
++    vec2 dl = abs(gl - CELL * floor(gl / CELL + 0.5)) * zg;
+     vec3 canvas = vec3(0.0);
+     float ca = 0.0;
+ 
+@@ -97,18 +178,18 @@ void main() {
+         float lxs = x0 + CELL * floor((g.x - x0) / CELL + 0.5) - shift.x;
+         float qv = clamp((e - abs(lxs - c.x) / c.x * 0.55) / 0.45, 0.0, 1.0);
+         float Lv = qv * R * 1.05;
+-        float onv = (1.0 - smoothstep(0.5, 1.2, dl.x)) * step(abs(p.y - c.y), Lv) * step(0.001, qv);
++        float onv = (1.0 - smoothstep(0.5, 1.2, dl.x)) * step(abs(pz.y - c.y), Lv) * step(0.001, qv);
+         float av = (0.11 + 0.4 * (1.0 - qv)) * onv;
+         float lys = 0.5 + CELL * floor((g.y - 0.5) / CELL + 0.5) - shift.y;
+         float qh = clamp((e - abs(lys - c.y) / R * 0.55) / 0.45, 0.0, 1.0);
+         float Lh = qh * c.x * 1.05;
+-        float onh = (1.0 - smoothstep(0.5, 1.2, dl.y)) * step(abs(p.x - c.x), Lh) * step(0.001, qh);
++        float onh = (1.0 - smoothstep(0.5, 1.2, dl.y)) * step(abs(pz.x - c.x), Lh) * step(0.001, qh);
+         float ah = (0.11 + 0.4 * (1.0 - qh)) * onh;
+         ca = max(av, ah);
+         canvas = CY;
+         /* bright line ends */
+-        float dv = min(length(p - vec2(lxs, c.y - Lv)), length(p - vec2(lxs, c.y + Lv)));
+-        float dh = min(length(p - vec2(c.x - Lh, lys)), length(p - vec2(c.x + Lh, lys)));
++        float dv = min(length(pz - vec2(lxs, c.y - Lv)), length(pz - vec2(lxs, c.y + Lv))) * zg;
++        float dh = min(length(pz - vec2(c.x - Lh, lys)), length(pz - vec2(c.x + Lh, lys))) * zg;
+         float halo = step(0.001, qv) * 0.18 * (1.0 - qv) * (1.0 - smoothstep(5.0, 6.0, dv))
+                    + step(0.001, qh) * 0.18 * (1.0 - qh) * (1.0 - smoothstep(5.0, 6.0, dh));
+         float core = step(0.001, qv) * 0.95 * (1.0 - qv) * (1.0 - smoothstep(1.3, 2.3, dv))
+@@ -120,74 +201,18 @@ void main() {
+         canvas = CY;
+         ca = 0.11 * line;
+ 
+-        /* One light cycle at a time: rides a grid line, may turn 90 degrees at a crossing */
+-        float PERIOD = 5.5;
+-        float tt = age - BUILD;
+-        float k = floor(tt / PERIOD);
+-        float a = tt - k * PERIOD;
+-        float r0 = hash1(k * 1.37 + 0.11);
+-        float life = 2.5 + 3.0 * hash1(k * 2.71 + 0.23);
+-        float spd = 150.0 + 140.0 * hash1(k * 3.19 + 0.37);
+-        vec3 pc = hash1(k * 4.13 + 0.41) < 0.22 ? OR : CY;
+-        bool vert = r0 < 0.5;
+-        float dir = hash1(k * 5.77 + 0.53) < 0.5 ? 1.0 : -1.0;
+-        /* start just off screen, on a grid line, in grid space */
+-        vec2 pos;
+-        vec2 dv2;
+-        float ncols = floor(S.x / CELL);
+-        float nrows = floor(S.y / CELL);
+-        if(vert){
+-            pos = vec2(x0 + floor(hash1(k * 6.31 + 0.67) * ncols) * CELL + CELL * floor(shift.x / CELL),
+-                       (dir > 0.0 ? -CELL : S.y + CELL) + shift.y);
+-            pos.y = 0.5 + CELL * floor((pos.y - 0.5) / CELL);
+-            dv2 = vec2(0.0, dir);
+-        }else{
+-            pos = vec2((dir > 0.0 ? -CELL : S.x + CELL) + shift.x,
+-                       0.5 + floor(hash1(k * 7.07 + 0.79) * nrows) * CELL + CELL * floor(shift.y / CELL));
+-            pos.x = x0 + CELL * floor((pos.x - x0) / CELL);
+-            dv2 = vec2(dir, 0.0);
+-        }
+-        float fade = life - a < 0.5 ? (life - a) / 0.5 : 1.0;
+-        if(a < life){
+-            float dist = spd * a;
+-            float tail = spd * 0.8;
+-            float travelled = 0.0;
+-            float glow = 0.0;
+-            float core = 0.0;
+-            vec2 head = pos;
+-            for(int i = 0; i < 12; i++){
+-                float fi = float(i);
+-                /* crossings before a turn: each crossing turns with p = 0.3 */
+-                float u = max(hash1(k * 8.9 + fi * 1.31 + 0.97), 1e-4);
+-                float n = 1.0 + floor(log(u) / log(0.7));
+-                float L = n * CELL;
+-                if(travelled >= dist) break;
+-                float l = min(L, dist - travelled);
+-                vec2 b = pos + dv2 * l;
+-                if(travelled + l > dist - tail){
+-                    vec2 d = seg(g, pos, b);
+-                    float along = travelled + d.y * l;
+-                    float pa = (dist - along) / tail;
+-                    float al = (1.0 - pa) * fade * step(pa, 1.0) * step(dist - tail, along);
+-                    glow = max(glow, al * 0.22 * (1.0 - smoothstep(2.0, 3.0, d.x)));
+-                    core = max(core, al * 0.9 * (1.0 - smoothstep(0.5, 1.25, d.x)));
+-                }
+-                travelled += l;
+-                pos = b;
+-                head = b;
+-                float tr = hash1(k * 9.7 + fi * 2.3 + 0.13);
+-                dv2 = vec2(-dv2.y, dv2.x) * (tr < 0.5 ? 1.0 : -1.0);
+-            }
+-            float hd = length(g - head);
+-            float hg = 0.3 * fade * (1.0 - smoothstep(6.5, 7.5, hd));
+-            float hc = 0.95 * fade * (1.0 - smoothstep(1.7, 2.7, hd));
+-            canvas = mix(canvas, pc, clamp((glow + core) / max(ca + glow + core, 1e-4), 0.0, 1.0));
+-            ca = clamp(ca + glow + core, 0.0, 1.0);
+-            canvas = mix(canvas, pc, hg / max(ca + hg, 1e-4));
+-            ca = clamp(ca + hg, 0.0, 1.0);
+-            canvas = mix(canvas, HOT, hc / max(ca + hc, 1e-4));
+-            ca = clamp(ca + hc, 0.0, 1.0);
+-        }
++        /* The light cycle of the grid block this point is in */
++        vec2 g0 = vec2(x0, 0.5);
++        vec2 bsz = BLOCK * CELL;
++        vec2 bk = floor((g - g0) / bsz);
++        vec3 pc;
++        vec3 cy = cycle(g, bk, g0 + bk * bsz, age - BUILD, zg, pc);
++        canvas = mix(canvas, pc, cy.x / max(ca + cy.x, 1e-4));
++        ca = clamp(ca + cy.x, 0.0, 1.0);
++        canvas = mix(canvas, pc, cy.y / max(ca + cy.y, 1e-4));
++        ca = clamp(ca + cy.y, 0.0, 1.0);
++        canvas = mix(canvas, HOT, cy.z / max(ca + cy.z, 1e-4));
++        ca = clamp(ca + cy.z, 0.0, 1.0);
+     }
+     col = over(col, canvas, ca * mask);
+ 
+diff --git a/src/wm/shaders/quad/fragment_ext.glsl b/src/wm/shaders/quad/fragment_ext.glsl
+new file mode 100644
+index 0000000..8bd39d4
+--- /dev/null
++++ b/src/wm/shaders/quad/fragment_ext.glsl
+@@ -0,0 +1,8 @@
++#extension GL_OES_EGL_image_external : require
++precision mediump float;
++varying vec2 v_texcoord;
++uniform samplerExternalOES tex;
++
++void main() {
++    gl_FragColor = texture2D(tex, v_texcoord);
++}
+diff --git a/src/wm/shaders/texture/cb_out/fragment_ext.glsl b/src/wm/shaders/texture/cb_out/fragment_ext.glsl
+new file mode 100644
+index 0000000..db81ffc
+--- /dev/null
++++ b/src/wm/shaders/texture/cb_out/fragment_ext.glsl
+@@ -0,0 +1,109 @@
++#extension GL_OES_EGL_image_external : require
++precision highp float;
++
++varying vec2 v_texcoord;
++uniform samplerExternalOES tex;
++uniform float alpha;
++
++uniform float offset_x;
++uniform float offset_y;
++uniform float scale_x;
++uniform float scale_y;
++uniform float width;
++uniform float height;
++
++uniform float padding_l;
++uniform float padding_t;
++uniform float padding_r;
++uniform float padding_b;
++uniform float cornerradius;
++uniform float lock_perc;
++
++uniform float time;
++uniform float fx_age;
++
++/* Tron Legacy derez. Drawn on the snapshot of a window after it closed
++ * (fx_age: seconds since). The window pixelates into cells that light up
++ * cyan, break away from the centre outwards, fall and dissolve. */
++const float DUR = 0.55;
++const float CELL = 14.0;
++const vec3 CY = vec3(0.133, 0.827, 0.933);
++const vec3 HOT = vec3(0.878, 0.984, 1.0);
++
++float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
++
++vec4 sample_px(vec2 q){
++    return texture2D(tex, vec2(q.x / scale_x + offset_x, q.y / scale_y + offset_y));
++}
++
++void main() {
++    float x = (v_texcoord.x - offset_x)*scale_x;
++    float y = (v_texcoord.y - offset_y)*scale_y;
++
++    if(x < padding_l) discard;
++    if(y < padding_t) discard;
++    if(x > width - padding_r) discard;
++    if(y > height - padding_b) discard;
++    if(x < cornerradius + padding_l && y < cornerradius + padding_t){
++        if(length(vec2(x, y) - vec2(cornerradius + padding_l, cornerradius + padding_t)) > cornerradius) discard;
++    }
++    if(x > width - cornerradius - padding_r && y < cornerradius + padding_t){
++        if(length(vec2(x, y) - vec2(width - cornerradius - padding_r, cornerradius + padding_t)) > cornerradius) discard;
++    }
++    if(x < cornerradius + padding_l && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - vec2(cornerradius + padding_l, height - cornerradius - padding_b)) > cornerradius) discard;
++    }
++    if(x > width - cornerradius - padding_r && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - vec2(width - cornerradius - padding_r, height - cornerradius - padding_b)) > cornerradius) discard;
++    }
++
++    vec2 p = vec2(x, y);
++    vec2 in0 = vec2(padding_l, padding_t);
++    vec2 size = vec2(width - padding_r, height - padding_b) - in0;
++    float t = clamp(fx_age / DUR, 0.0, 1.0);
++    vec2 c0 = floor((p - in0) / CELL);
++
++    /* Cells fall, so this pixel may show its own cell or one from above */
++    vec4 col = vec4(0.0);
++    bool hit = false;
++    for(int k = 0; k < 9; k++){
++        vec2 ci = c0 - vec2(0.0, float(k));
++        if(ci.y < 0.0) break;
++        vec2 cc = in0 + (ci + 0.5) * CELL;
++        float h = hash(ci + 0.37);
++        float h2 = hash(ci * 1.7 + 9.1);
++        /* break time: from the centre outwards, with some noise */
++        float d = length((cc - in0 - 0.5 * size) / (0.5 * size + 1.0));
++        float tb = 0.10 + 0.30 * d + 0.18 * h;
++        float a = t - tb;
++        vec2 disp = vec2(0.0);
++        float s = 1.0;
++        if(a > 0.0){
++            float ar = a * DUR;
++            disp = vec2((h2 - 0.5) * 40.0 * ar, (60.0 + 90.0 * h) * ar + 1000.0 * ar * ar);
++            s = 1.0 - a / 0.45;
++        }
++        if(s <= 0.0) continue;
++        vec2 rel = (p - disp - cc) / (0.5 * CELL * s);
++        if(abs(rel.x) > 1.0 || abs(rel.y) > 1.0) continue;
++
++        /* pixelate as the cell is about to break, light its rim, tint it */
++        vec2 src = cc + rel * 0.5 * CELL;
++        float mosaic = smoothstep(tb - 0.14, tb - 0.02, t);
++        vec4 c = mix(sample_px(src), sample_px(cc), mosaic);
++        float lit = smoothstep(tb - 0.10, tb + 0.04, t);
++        float rim = smoothstep(0.72, 1.0, max(abs(rel.x), abs(rel.y))) * lit;
++        float fade = s;
++        vec3 rgb = mix(c.rgb, CY * c.a, 0.4 * lit) * fade;
++        rgb += CY * rim * 0.9 * fade;
++        rgb += HOT * rim * 0.4 * fade * smoothstep(0.0, 0.1, a);
++        col = vec4(rgb, max(c.a * fade, rim * fade));
++        hit = true;
++        break;
++    }
++    if(!hit) discard;
++
++    /* the flash when the program is cut */
++    col.rgb += CY * 0.5 * (1.0 - smoothstep(0.0, 0.08, t)) * col.a;
++    gl_FragColor = col * alpha;
++}
+diff --git a/src/wm/shaders/texture/cb_out/fragment_rgba.glsl b/src/wm/shaders/texture/cb_out/fragment_rgba.glsl
+new file mode 100644
+index 0000000..ea4efa9
+--- /dev/null
++++ b/src/wm/shaders/texture/cb_out/fragment_rgba.glsl
+@@ -0,0 +1,108 @@
++precision highp float;
++
++varying vec2 v_texcoord;
++uniform sampler2D tex;
++uniform float alpha;
++
++uniform float offset_x;
++uniform float offset_y;
++uniform float scale_x;
++uniform float scale_y;
++uniform float width;
++uniform float height;
++
++uniform float padding_l;
++uniform float padding_t;
++uniform float padding_r;
++uniform float padding_b;
++uniform float cornerradius;
++uniform float lock_perc;
++
++uniform float time;
++uniform float fx_age;
++
++/* Tron Legacy derez. Drawn on the snapshot of a window after it closed
++ * (fx_age: seconds since). The window pixelates into cells that light up
++ * cyan, break away from the centre outwards, fall and dissolve. */
++const float DUR = 0.55;
++const float CELL = 14.0;
++const vec3 CY = vec3(0.133, 0.827, 0.933);
++const vec3 HOT = vec3(0.878, 0.984, 1.0);
++
++float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
++
++vec4 sample_px(vec2 q){
++    return texture2D(tex, vec2(q.x / scale_x + offset_x, q.y / scale_y + offset_y));
++}
++
++void main() {
++    float x = (v_texcoord.x - offset_x)*scale_x;
++    float y = (v_texcoord.y - offset_y)*scale_y;
++
++    if(x < padding_l) discard;
++    if(y < padding_t) discard;
++    if(x > width - padding_r) discard;
++    if(y > height - padding_b) discard;
++    if(x < cornerradius + padding_l && y < cornerradius + padding_t){
++        if(length(vec2(x, y) - vec2(cornerradius + padding_l, cornerradius + padding_t)) > cornerradius) discard;
++    }
++    if(x > width - cornerradius - padding_r && y < cornerradius + padding_t){
++        if(length(vec2(x, y) - vec2(width - cornerradius - padding_r, cornerradius + padding_t)) > cornerradius) discard;
++    }
++    if(x < cornerradius + padding_l && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - vec2(cornerradius + padding_l, height - cornerradius - padding_b)) > cornerradius) discard;
++    }
++    if(x > width - cornerradius - padding_r && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - vec2(width - cornerradius - padding_r, height - cornerradius - padding_b)) > cornerradius) discard;
++    }
++
++    vec2 p = vec2(x, y);
++    vec2 in0 = vec2(padding_l, padding_t);
++    vec2 size = vec2(width - padding_r, height - padding_b) - in0;
++    float t = clamp(fx_age / DUR, 0.0, 1.0);
++    vec2 c0 = floor((p - in0) / CELL);
++
++    /* Cells fall, so this pixel may show its own cell or one from above */
++    vec4 col = vec4(0.0);
++    bool hit = false;
++    for(int k = 0; k < 9; k++){
++        vec2 ci = c0 - vec2(0.0, float(k));
++        if(ci.y < 0.0) break;
++        vec2 cc = in0 + (ci + 0.5) * CELL;
++        float h = hash(ci + 0.37);
++        float h2 = hash(ci * 1.7 + 9.1);
++        /* break time: from the centre outwards, with some noise */
++        float d = length((cc - in0 - 0.5 * size) / (0.5 * size + 1.0));
++        float tb = 0.10 + 0.30 * d + 0.18 * h;
++        float a = t - tb;
++        vec2 disp = vec2(0.0);
++        float s = 1.0;
++        if(a > 0.0){
++            float ar = a * DUR;
++            disp = vec2((h2 - 0.5) * 40.0 * ar, (60.0 + 90.0 * h) * ar + 1000.0 * ar * ar);
++            s = 1.0 - a / 0.45;
++        }
++        if(s <= 0.0) continue;
++        vec2 rel = (p - disp - cc) / (0.5 * CELL * s);
++        if(abs(rel.x) > 1.0 || abs(rel.y) > 1.0) continue;
++
++        /* pixelate as the cell is about to break, light its rim, tint it */
++        vec2 src = cc + rel * 0.5 * CELL;
++        float mosaic = smoothstep(tb - 0.14, tb - 0.02, t);
++        vec4 c = mix(sample_px(src), sample_px(cc), mosaic);
++        float lit = smoothstep(tb - 0.10, tb + 0.04, t);
++        float rim = smoothstep(0.72, 1.0, max(abs(rel.x), abs(rel.y))) * lit;
++        float fade = s;
++        vec3 rgb = mix(c.rgb, CY * c.a, 0.4 * lit) * fade;
++        rgb += CY * rim * 0.9 * fade;
++        rgb += HOT * rim * 0.4 * fade * smoothstep(0.0, 0.1, a);
++        col = vec4(rgb, max(c.a * fade, rim * fade));
++        hit = true;
++        break;
++    }
++    if(!hit) discard;
++
++    /* the flash when the program is cut */
++    col.rgb += CY * 0.5 * (1.0 - smoothstep(0.0, 0.08, t)) * col.a;
++    gl_FragColor = col * alpha;
++}
+diff --git a/src/wm/shaders/texture/cb_out/fragment_rgbx.glsl b/src/wm/shaders/texture/cb_out/fragment_rgbx.glsl
+new file mode 100644
+index 0000000..d89375b
+--- /dev/null
++++ b/src/wm/shaders/texture/cb_out/fragment_rgbx.glsl
+@@ -0,0 +1,110 @@
++precision highp float;
++
++varying vec2 v_texcoord;
++uniform sampler2D tex;
++uniform float alpha;
++
++uniform float offset_x;
++uniform float offset_y;
++uniform float scale_x;
++uniform float scale_y;
++uniform float width;
++uniform float height;
++
++uniform float padding_l;
++uniform float padding_t;
++uniform float padding_r;
++uniform float padding_b;
++uniform float cornerradius;
++uniform float lock_perc;
++
++uniform float time;
++uniform float fx_age;
++
++/* Tron Legacy derez. Drawn on the snapshot of a window after it closed
++ * (fx_age: seconds since). The window pixelates into cells that light up
++ * cyan, break away from the centre outwards, fall and dissolve. */
++const float DUR = 0.55;
++const float CELL = 14.0;
++const vec3 CY = vec3(0.133, 0.827, 0.933);
++const vec3 HOT = vec3(0.878, 0.984, 1.0);
++
++float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
++
++vec4 sample_px(vec2 q){
++    vec4 c = texture2D(tex, vec2(q.x / scale_x + offset_x, q.y / scale_y + offset_y));
++    c.a = 1.0;
++    return c;
++}
++
++void main() {
++    float x = (v_texcoord.x - offset_x)*scale_x;
++    float y = (v_texcoord.y - offset_y)*scale_y;
++
++    if(x < padding_l) discard;
++    if(y < padding_t) discard;
++    if(x > width - padding_r) discard;
++    if(y > height - padding_b) discard;
++    if(x < cornerradius + padding_l && y < cornerradius + padding_t){
++        if(length(vec2(x, y) - vec2(cornerradius + padding_l, cornerradius + padding_t)) > cornerradius) discard;
++    }
++    if(x > width - cornerradius - padding_r && y < cornerradius + padding_t){
++        if(length(vec2(x, y) - vec2(width - cornerradius - padding_r, cornerradius + padding_t)) > cornerradius) discard;
++    }
++    if(x < cornerradius + padding_l && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - vec2(cornerradius + padding_l, height - cornerradius - padding_b)) > cornerradius) discard;
++    }
++    if(x > width - cornerradius - padding_r && y > height - cornerradius - padding_b){
++        if(length(vec2(x, y) - vec2(width - cornerradius - padding_r, height - cornerradius - padding_b)) > cornerradius) discard;
++    }
++
++    vec2 p = vec2(x, y);
++    vec2 in0 = vec2(padding_l, padding_t);
++    vec2 size = vec2(width - padding_r, height - padding_b) - in0;
++    float t = clamp(fx_age / DUR, 0.0, 1.0);
++    vec2 c0 = floor((p - in0) / CELL);
++
++    /* Cells fall, so this pixel may show its own cell or one from above */
++    vec4 col = vec4(0.0);
++    bool hit = false;
++    for(int k = 0; k < 9; k++){
++        vec2 ci = c0 - vec2(0.0, float(k));
++        if(ci.y < 0.0) break;
++        vec2 cc = in0 + (ci + 0.5) * CELL;
++        float h = hash(ci + 0.37);
++        float h2 = hash(ci * 1.7 + 9.1);
++        /* break time: from the centre outwards, with some noise */
++        float d = length((cc - in0 - 0.5 * size) / (0.5 * size + 1.0));
++        float tb = 0.10 + 0.30 * d + 0.18 * h;
++        float a = t - tb;
++        vec2 disp = vec2(0.0);
++        float s = 1.0;
++        if(a > 0.0){
++            float ar = a * DUR;
++            disp = vec2((h2 - 0.5) * 40.0 * ar, (60.0 + 90.0 * h) * ar + 1000.0 * ar * ar);
++            s = 1.0 - a / 0.45;
++        }
++        if(s <= 0.0) continue;
++        vec2 rel = (p - disp - cc) / (0.5 * CELL * s);
++        if(abs(rel.x) > 1.0 || abs(rel.y) > 1.0) continue;
++
++        /* pixelate as the cell is about to break, light its rim, tint it */
++        vec2 src = cc + rel * 0.5 * CELL;
++        float mosaic = smoothstep(tb - 0.14, tb - 0.02, t);
++        vec4 c = mix(sample_px(src), sample_px(cc), mosaic);
++        float lit = smoothstep(tb - 0.10, tb + 0.04, t);
++        float rim = smoothstep(0.72, 1.0, max(abs(rel.x), abs(rel.y))) * lit;
++        float fade = s;
++        vec3 rgb = mix(c.rgb, CY * c.a, 0.4 * lit) * fade;
++        rgb += CY * rim * 0.9 * fade;
++        rgb += HOT * rim * 0.4 * fade * smoothstep(0.0, 0.1, a);
++        col = vec4(rgb, max(c.a * fade, rim * fade));
++        hit = true;
++        break;
++    }
++    if(!hit) discard;
++
++    /* the flash when the program is cut */
++    col.rgb += CY * 0.5 * (1.0 - smoothstep(0.0, 0.08, t)) * col.a;
++    gl_FragColor = col * alpha;
++}
+diff --git a/src/wm/shaders/texture/cb_out/vertex.glsl b/src/wm/shaders/texture/cb_out/vertex.glsl
+new file mode 100644
+index 0000000..3026521
+--- /dev/null
++++ b/src/wm/shaders/texture/cb_out/vertex.glsl
+@@ -0,0 +1,9 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++    gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++    v_texcoord = texcoord;
++}
+diff --git a/src/wm/wm_ghost.c b/src/wm/wm_ghost.c
+new file mode 100644
+index 0000000..a0ebca8
+--- /dev/null
++++ b/src/wm/wm_ghost.c
+@@ -0,0 +1,214 @@
++#define _POSIX_C_SOURCE 200809L
++
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <math.h>
++#include <time.h>
++#include <wlr/util/log.h>
++
++#include "wm/wm_ghost.h"
++#include "wm/wm_view.h"
++#include "wm/wm_server.h"
++#include "wm/wm_output.h"
++#include "wm/wm_layout.h"
++#include "wm/wm_renderer.h"
++#include "wm/wm_config.h"
++#include "wm/wm_util.h"
++
++/* Seconds the ghost stays; the shader decides what it looks like meanwhile */
++#define WM_GHOST_DURATION 0.6
++
++struct wm_content_vtable wm_ghost_vtable;
++
++static double age_of(struct wm_ghost* ghost, struct timespec now){
++    return (now.tv_sec - ghost->start.tv_sec) + (now.tv_nsec - ghost->start.tv_nsec) / 1e9;
++}
++
++static int timer_handler(void* data){
++    struct wm_ghost* ghost = data;
++    struct timespec now;
++    clock_gettime(CLOCK_MONOTONIC, &now);
++
++    wm_layout_damage_from(ghost->super.wm_server->wm_layout, &ghost->super, NULL);
++    if(age_of(ghost, now) > WM_GHOST_DURATION){
++        wm_content_destroy(&ghost->super);
++        return 0;
++    }
++
++    int fps = ghost->super.wm_server->wm_config->anim_fps;
++    int ms = fps > 0 ? 1000 / fps : 16;
++    wl_event_source_timer_update(ghost->timer, ms < 8 ? 8 : ms);
++    return 0;
++}
++
++static void wm_ghost_destroy(struct wm_content* super){
++    struct wm_ghost* ghost = wm_cast(wm_ghost, super);
++    if(ghost->timer) wl_event_source_remove(ghost->timer);
++#ifdef WM_CUSTOM_RENDERER
++    wm_renderer_delete_texture(super->wm_server->wm_renderer, ghost->tex);
++#endif
++    wm_content_base_destroy(super);
++    free(ghost);
++}
++
++static void wm_ghost_render(struct wm_content* super, struct wm_output* output, pixman_region32_t* output_damage, struct timespec now){
++#ifdef WM_CUSTOM_RENDERER
++    struct wm_ghost* ghost = wm_cast(wm_ghost, super);
++    if(output != ghost->output) return;
++    double age = age_of(ghost, now);
++    if(age > WM_GHOST_DURATION) return;
++
++    double display_x, display_y, display_width, display_height;
++    wm_content_get_box(super, &display_x, &display_y, &display_width, &display_height);
++    double mask_x, mask_y, mask_w, mask_h;
++    wm_content_get_mask(super, &mask_x, &mask_y, &mask_w, &mask_h);
++    double s = output->wlr_output->scale;
++
++    struct wlr_box box = {
++        .x = round((display_x - output->layout_x) * s),
++        .y = round((display_y - output->layout_y) * s),
++        .width = round(display_width * s),
++        .height = round(display_height * s)};
++    struct wlr_box mask = {
++        .x = round((display_x - output->layout_x + mask_x) * s),
++        .y = round((display_y - output->layout_y + mask_y) * s),
++        .width = round(mask_w * s),
++        .height = round(mask_h * s)};
++
++    struct wm_renderer* renderer = super->wm_server->wm_renderer;
++    struct wm_renderer_texture_shaders* saved = renderer->texture_shaders_selected;
++    renderer->texture_shaders_selected = ghost->shaders;
++    renderer->fx_age = age;
++    wm_renderer_render_gl_texture_at(renderer, output_damage, ghost->tex, ghost->tex_w, ghost->tex_h, &box,
++            wm_content_get_opacity(super), &mask, wm_content_get_corner_radius(super) * s,
++            super->lock_enabled ? 0.0 : super->wm_server->lock_perc);
++    renderer->fx_age = 1000.f;
++    renderer->texture_shaders_selected = saved;
++#endif
++}
++
++static void wm_ghost_printf(FILE* file, struct wm_content* super){
++    struct wm_ghost* ghost = wm_cast(wm_ghost, super);
++    fprintf(file, "wm_ghost (%f, %f - %f, %f)\n", super->display_x, super->display_y, super->display_width, super->display_height);
++    (void)ghost;
++}
++
++struct wm_content_vtable wm_ghost_vtable = {
++    .destroy = &wm_ghost_destroy,
++    .render = &wm_ghost_render,
++    .damage_output = NULL,
++    .printf = &wm_ghost_printf
++};
++
++#ifdef WM_CUSTOM_RENDERER
++static struct wm_renderer_texture_shaders* out_shaders(struct wm_server* server){
++    char name[WM_CONFIG_STRLEN + 8];
++    snprintf(name, sizeof(name), "%s_out", server->wm_config->texture_shaders);
++    return wm_renderer_find_texture_shaders(server->wm_renderer, name);
++}
++
++/* The output showing the centre of the view (first output as fallback) */
++static struct wm_output* output_of(struct wm_view* view){
++    double dx, dy, dw, dh;
++    wm_content_get_box(&view->super, &dx, &dy, &dw, &dh);
++    double cx = dx + dw / 2., cy = dy + dh / 2.;
++    struct wm_output* first = NULL;
++    struct wm_output* o;
++    wl_list_for_each(o, &view->super.wm_server->wm_layout->wm_outputs, link){
++        if(!first) first = o;
++        double w = o->wlr_output->width / o->wlr_output->scale;
++        double h = o->wlr_output->height / o->wlr_output->scale;
++        if(cx >= o->layout_x && cx < o->layout_x + w && cy >= o->layout_y && cy < o->layout_y + h) return o;
++    }
++    return first;
++}
++#endif
++
++void wm_ghost_drop_prepared(struct wm_view* view){
++#ifdef WM_CUSTOM_RENDERER
++    if(view->ghost_tex){
++        wm_renderer_delete_texture(view->super.wm_server->wm_renderer, view->ghost_tex);
++    }
++#endif
++    view->ghost_tex = 0;
++}
++
++void wm_ghost_prepare(struct wm_view* view){
++#ifdef WM_CUSTOM_RENDERER
++    struct wm_server* server = view->super.wm_server;
++    if(!view->mapped || !out_shaders(server)) return;
++    struct wm_output* output = output_of(view);
++    if(!output) return;
++    wm_ghost_drop_prepared(view);
++    int w = 0, h = 0;
++    view->ghost_tex = wm_renderer_snapshot_view(server->wm_renderer, view, output, &w, &h);
++    view->ghost_w = w;
++    view->ghost_h = h;
++    clock_gettime(CLOCK_MONOTONIC, &view->ghost_at);
++#endif
++}
++
++void wm_ghost_from_view(struct wm_view* view){
++#ifdef WM_CUSTOM_RENDERER
++    struct wm_server* server = view->super.wm_server;
++    struct wm_renderer_texture_shaders* shaders = out_shaders(server);
++    struct wm_output* output = output_of(view);
++    if(!view->mapped || !shaders || !output || wm_content_get_opacity(&view->super) < 0.01){
++        wm_ghost_drop_prepared(view);
++        return;
++    }
++
++    struct timespec now;
++    clock_gettime(CLOCK_MONOTONIC, &now);
++
++    unsigned int tex = 0;
++    int w = 0, h = 0;
++    double prepared_age = (now.tv_sec - view->ghost_at.tv_sec) + (now.tv_nsec - view->ghost_at.tv_nsec) / 1e9;
++    if(view->ghost_tex && prepared_age < 0.5){
++        /* snapshot taken when the client dropped its buffer */
++        tex = view->ghost_tex;
++        w = view->ghost_w;
++        h = view->ghost_h;
++        view->ghost_tex = 0;
++    }else{
++        wm_ghost_drop_prepared(view);
++        tex = wm_renderer_snapshot_view(server->wm_renderer, view, output, &w, &h);
++    }
++    if(!tex) return;
++
++    struct wm_ghost* ghost = calloc(1, sizeof(struct wm_ghost));
++    wm_content_init(&ghost->super, server);
++    ghost->super.vtable = &wm_ghost_vtable;
++    ghost->tex = tex;
++    ghost->tex_w = w;
++    ghost->tex_h = h;
++    ghost->output = output;
++    ghost->shaders = shaders;
++    ghost->start = now;
++
++    /* Same place, mask, rounding, depth and workspace as the window had */
++    struct wm_content* c = &view->super;
++    ghost->super.display_x = c->display_x;
++    ghost->super.display_y = c->display_y;
++    ghost->super.display_width = c->display_width;
++    ghost->super.display_height = c->display_height;
++    ghost->super.fixed_output = c->fixed_output;
++    ghost->super.workspace_x = c->workspace_x;
++    ghost->super.workspace_y = c->workspace_y;
++    ghost->super.workspace_width = c->workspace_width;
++    ghost->super.workspace_height = c->workspace_height;
++    ghost->super.mask_x = c->mask_x;
++    ghost->super.mask_y = c->mask_y;
++    ghost->super.mask_w = c->mask_w;
++    ghost->super.mask_h = c->mask_h;
++    ghost->super.corner_radius = c->corner_radius;
++    ghost->super.z_index = c->z_index;
++    ghost->super.opacity = c->opacity;
++    ghost->super.lock_enabled = c->lock_enabled;
++
++    ghost->timer = wl_event_loop_add_timer(server->wl_event_loop, timer_handler, ghost);
++    if(ghost->timer) wl_event_source_timer_update(ghost->timer, 8);
++    wm_layout_damage_from(server->wm_layout, &ghost->super, NULL);
++#endif
++}
+diff --git a/src/wm/wm_renderer.c b/src/wm/wm_renderer.c
+index 09fa1ac..2f380f7 100644
+--- a/src/wm/wm_renderer.c
++++ b/src/wm/wm_renderer.c
+@@ -14,10 +14,12 @@
+ #include "wm/wm_renderer.h"
+ #include "wm/wm_server.h"
+ #include "wm/wm_config.h"
++#include "wm/wm_view.h"
+ 
+ #ifdef WM_CUSTOM_RENDERER
+ 
+ #include <render/gles2.h>
++#include <wlr/render/egl.h>
+ #include "wm/shaders/wm_shaders.h"
+ 
+ #include "quad_shaders.c"
+@@ -121,6 +123,18 @@ static void wm_renderer_init_quad_shaders(struct wm_renderer* renderer){
+     renderer->quad_shader.pos_attrib = glGetAttribLocation(renderer->quad_shader.shader, "pos");
+     renderer->quad_shader.tex_attrib = glGetAttribLocation(renderer->quad_shader.shader, "texcoord");
+ 
++    /* Quad shader for external textures (view snapshots of dmabuf clients) */
++    renderer->quad_ext_shader.shader = 0;
++    struct wlr_gles2_renderer *gles2_renderer = gles2_get_renderer(renderer->wlr_renderer);
++    if(gles2_renderer->exts.OES_egl_image_external){
++        renderer->quad_ext_shader.shader = wm_renderer_link_program(renderer, quad_vertex_src, quad_fragment_ext_src);
++        if(renderer->quad_ext_shader.shader){
++            renderer->quad_ext_shader.tex = glGetUniformLocation(renderer->quad_ext_shader.shader, "tex");
++            renderer->quad_ext_shader.pos_attrib = glGetAttribLocation(renderer->quad_ext_shader.shader, "pos");
++            renderer->quad_ext_shader.tex_attrib = glGetAttribLocation(renderer->quad_ext_shader.shader, "texcoord");
++        }
++    }
++
+     /* Downsample shader */
+     renderer->downsample_shader.shader = wm_renderer_link_program(renderer, quad_vertex_src, quad_fragment_downsample_src);
+     assert(renderer->downsample_shader.shader);
+@@ -314,21 +328,20 @@ bool wm_renderer_check_primitive_params(struct wm_renderer* renderer, int n_int,
+ 
+ #ifdef WM_CUSTOM_RENDERER
+ 
+-static bool render_subtexture_with_matrix(
+-    struct wm_renderer *renderer, struct wlr_texture *wlr_texture,
++static bool render_gl_texture_with_matrix(
++    struct wm_renderer *renderer, GLenum target, GLuint tex, bool has_alpha, int tex_w, int tex_h,
+     const struct wlr_fbox *box, const float matrix[static 9], float alpha,
+     const struct wlr_box *display_box, double padding_l, double padding_t,
+     double padding_r, double padding_b, float corner_radius, double lock_perc) {
+ 
+     struct wlr_gles2_renderer *gles2_renderer =
+         gles2_get_renderer(renderer->wlr_renderer);
+-    struct wlr_gles2_texture *texture = gles2_get_texture(wlr_texture);
+ 
+     struct wm_renderer_texture_shader *shader = NULL;
+ 
+-    switch (texture->target) {
++    switch (target) {
+     case GL_TEXTURE_2D:
+-        if (texture->has_alpha) {
++        if (has_alpha) {
+             shader = &renderer->texture_shaders_selected->rgba;
+         } else {
+             shader = &renderer->texture_shaders_selected->rgbx;
+@@ -357,27 +370,27 @@ static bool render_subtexture_with_matrix(
+ 
+     push_gles2_debug(gles2_renderer);
+ 
+-    if (!texture->has_alpha && alpha == 1.0) {
++    if (!has_alpha && alpha == 1.0) {
+         glDisable(GL_BLEND);
+     } else {
+         glEnable(GL_BLEND);
+     }
+ 
+     glActiveTexture(GL_TEXTURE0);
+-    glBindTexture(texture->target, texture->tex);
++    glBindTexture(target, tex);
+ 
+-    glTexParameteri(texture->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+-    glTexParameteri(texture->target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+ 
+     glUseProgram(shader->shader);
+ 
+     glUniformMatrix3fv(shader->proj, 1, GL_FALSE, gl_matrix);
+     glUniform1i(shader->tex, 0);
+     glUniform1f(shader->alpha, alpha);
+-    glUniform1f(shader->offset_x, box->x / wlr_texture->width);
+-    glUniform1f(shader->offset_y, box->y / wlr_texture->height);
+-    glUniform1f(shader->scale_x, display_box->width / (box->width / wlr_texture->width));
+-    glUniform1f(shader->scale_y, display_box->height / (box->height / wlr_texture->height));
++    glUniform1f(shader->offset_x, box->x / tex_w);
++    glUniform1f(shader->offset_y, box->y / tex_h);
++    glUniform1f(shader->scale_x, display_box->width / (box->width / tex_w));
++    glUniform1f(shader->scale_y, display_box->height / (box->height / tex_h));
+     glUniform1f(shader->width, display_box->width);
+     glUniform1f(shader->height, display_box->height);
+     glUniform1f(shader->padding_l, padding_l);
+@@ -389,10 +402,10 @@ static bool render_subtexture_with_matrix(
+     glUniform1f(shader->time, renderer->time);
+     glUniform1f(shader->fx_age, renderer->fx_age);
+ 
+-    const GLfloat x1 = box->x / wlr_texture->width;
+-    const GLfloat y1 = box->y / wlr_texture->height;
+-    const GLfloat x2 = (box->x + box->width) / wlr_texture->width;
+-    const GLfloat y2 = (box->y + box->height) / wlr_texture->height;
++    const GLfloat x1 = box->x / tex_w;
++    const GLfloat y1 = box->y / tex_h;
++    const GLfloat x2 = (box->x + box->width) / tex_w;
++    const GLfloat y2 = (box->y + box->height) / tex_h;
+     const GLfloat texcoord[] = {
+         x2, y1, // top right
+         x1, y1, // top left
+@@ -412,12 +425,24 @@ static bool render_subtexture_with_matrix(
+     glDisableVertexAttribArray(shader->pos_attrib);
+     glDisableVertexAttribArray(shader->tex_attrib);
+ 
+-    glBindTexture(texture->target, 0);
++    glBindTexture(target, 0);
+ 
+     pop_gles2_debug(gles2_renderer);
+     return true;
+ }
+ 
++
++static bool render_subtexture_with_matrix(
++    struct wm_renderer *renderer, struct wlr_texture *wlr_texture,
++    const struct wlr_fbox *box, const float matrix[static 9], float alpha,
++    const struct wlr_box *display_box, double padding_l, double padding_t,
++    double padding_r, double padding_b, float corner_radius, double lock_perc) {
++    struct wlr_gles2_texture *texture = gles2_get_texture(wlr_texture);
++    return render_gl_texture_with_matrix(renderer, texture->target, texture->tex, texture->has_alpha,
++            wlr_texture->width, wlr_texture->height, box, matrix, alpha, display_box,
++            padding_l, padding_t, padding_r, padding_b, corner_radius, lock_perc);
++}
++
+ static void render_primitive_with_matrix(
+     struct wm_renderer *renderer,
+     const struct wlr_fbox *box, const float matrix[static 9], float alpha, const GLint* params_int, const GLfloat* params_float){
+@@ -1113,3 +1138,189 @@ void wm_renderer_ensure_mode(struct wm_renderer* renderer, enum wm_renderer_mode
+     }
+ }
+ 
++
++
++#ifdef WM_CUSTOM_RENDERER
++
++struct wm_renderer_texture_shaders* wm_renderer_find_texture_shaders(struct wm_renderer* renderer, const char* name){
++    for(int i = 0; i < renderer->n_texture_shaders; i++){
++        if(renderer->texture_shaders[i].name && !strcmp(renderer->texture_shaders[i].name, name))
++            return renderer->texture_shaders + i;
++    }
++    return NULL;
++}
++
++void wm_renderer_delete_texture(struct wm_renderer* renderer, unsigned int tex){
++    if(!tex || renderer->mode != WM_RENDERER_PYWM) return;
++    struct wlr_gles2_renderer* g = gles2_get_renderer(renderer->wlr_renderer);
++    bool was_current = wlr_egl_is_current(g->egl);
++    if(!was_current && !wlr_egl_make_current(g->egl)) return;
++    GLuint t = tex;
++    glDeleteTextures(1, &t);
++    if(!was_current) wlr_egl_unset_current(g->egl);
++}
++
++struct snapshot_data {
++    struct wm_renderer* renderer;
++    int width;
++    int height;
++    double x_scale;
++    double y_scale;
++    int n;
++};
++
++/* Draw one surface of the view into the snapshot framebuffer */
++static void snapshot_surface(struct wlr_surface* surface, int sx, int sy, bool constrained, void* data){
++    struct snapshot_data* d = data;
++    struct wlr_texture* t = wlr_surface_get_texture(surface);
++    if(!t) return;
++    struct wlr_gles2_texture* gt = gles2_get_texture(t);
++
++    GLuint shader;
++    GLint utex, apos, atex;
++    if(gt->target == GL_TEXTURE_EXTERNAL_OES){
++        if(!d->renderer->quad_ext_shader.shader) return;
++        shader = d->renderer->quad_ext_shader.shader;
++        utex = d->renderer->quad_ext_shader.tex;
++        apos = d->renderer->quad_ext_shader.pos_attrib;
++        atex = d->renderer->quad_ext_shader.tex_attrib;
++    }else{
++        shader = d->renderer->quad_shader.shader;
++        utex = d->renderer->quad_shader.tex;
++        apos = d->renderer->quad_shader.pos_attrib;
++        atex = d->renderer->quad_shader.tex_attrib;
++    }
++
++    struct wlr_fbox src;
++    wlr_surface_get_buffer_source_box(surface, &src);
++    float u0 = src.x / t->width, v0 = src.y / t->height;
++    float u1 = (src.x + src.width) / t->width, v1 = (src.y + src.height) / t->height;
++
++    /* Image top goes to the bottom of the GL framebuffer, so texture row 0 is
++     * the top of the image, as for every other wlroots texture */
++    float x0 = sx * d->x_scale, y0 = sy * d->y_scale;
++    float x1 = x0 + surface->current.width * d->x_scale;
++    float y1 = y0 + surface->current.height * d->y_scale;
++    float X0 = 2.f * x0 / d->width - 1.f, X1 = 2.f * x1 / d->width - 1.f;
++    float Y0 = 2.f * y0 / d->height - 1.f, Y1 = 2.f * y1 / d->height - 1.f;
++    GLfloat pos[] = { X1, Y0, X0, Y0, X1, Y1, X0, Y1 };
++    GLfloat tc[] = { u1, v0, u0, v0, u1, v1, u0, v1 };
++
++    glUseProgram(shader);
++    glActiveTexture(GL_TEXTURE0);
++    glBindTexture(gt->target, gt->tex);
++    glTexParameteri(gt->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(gt->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glUniform1i(utex, 0);
++    glVertexAttribPointer(apos, 2, GL_FLOAT, GL_FALSE, 0, pos);
++    glVertexAttribPointer(atex, 2, GL_FLOAT, GL_FALSE, 0, tc);
++    glEnableVertexAttribArray(apos);
++    glEnableVertexAttribArray(atex);
++    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++    glDisableVertexAttribArray(apos);
++    glDisableVertexAttribArray(atex);
++    glBindTexture(gt->target, 0);
++    d->n++;
++}
++
++unsigned int wm_renderer_snapshot_view(struct wm_renderer* renderer, struct wm_view* view, struct wm_output* output, int* width, int* height){
++    if(renderer->mode != WM_RENDERER_PYWM) return 0;
++    struct wlr_gles2_renderer* g = gles2_get_renderer(renderer->wlr_renderer);
++
++    double dx, dy, dw, dh;
++    wm_content_get_box(&view->super, &dx, &dy, &dw, &dh);
++    int vw, vh;
++    wm_view_get_size(view, &vw, &vh);
++    double scale = output->wlr_output->scale;
++    int W = round(dw * scale), H = round(dh * scale);
++    if(W < 2 || H < 2 || vw < 1 || vh < 1 || W > 16384 || H > 16384) return 0;
++
++    bool was_current = wlr_egl_is_current(g->egl);
++    if(!was_current && !wlr_egl_make_current(g->egl)) return 0;
++    push_gles2_debug(g);
++
++    GLint prev_fbo = 0;
++    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
++    GLint prev_vp[4];
++    glGetIntegerv(GL_VIEWPORT, prev_vp);
++    GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
++
++    GLuint tex = 0, fbo = 0;
++    glGenTextures(1, &tex);
++    glBindTexture(GL_TEXTURE_2D, tex);
++    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++    glBindTexture(GL_TEXTURE_2D, 0);
++    glGenFramebuffers(1, &fbo);
++    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
++    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
++
++    struct snapshot_data d = {
++        .renderer = renderer, .width = W, .height = H,
++        .x_scale = dw / vw * scale, .y_scale = dh / vh * scale, .n = 0 };
++    if(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE){
++        glViewport(0, 0, W, H);
++        glDisable(GL_SCISSOR_TEST);
++        glClearColor(0.f, 0.f, 0.f, 0.f);
++        glClear(GL_COLOR_BUFFER_BIT);
++        glEnable(GL_BLEND);
++        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
++        wm_view_for_each_surface(view, snapshot_surface, &d);
++    }else{
++        wlr_log(WLR_ERROR, "Snapshot framebuffer incomplete");
++    }
++
++    glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
++    glDeleteFramebuffers(1, &fbo);
++    glViewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
++    if(scissor) glEnable(GL_SCISSOR_TEST);
++    if(d.n == 0){
++        glDeleteTextures(1, &tex);
++        tex = 0;
++    }
++
++    pop_gles2_debug(g);
++    if(!was_current) wlr_egl_unset_current(g->egl);
++
++    if(tex){
++        *width = W;
++        *height = H;
++    }
++    return tex;
++}
++
++void wm_renderer_render_gl_texture_at(struct wm_renderer* renderer, pixman_region32_t* damage,
++        unsigned int tex, int tex_w, int tex_h, struct wlr_box* box, double opacity,
++        struct wlr_box* mask, double corner_radius, double lock_perc){
++    if(renderer->mode != WM_RENDERER_PYWM || !renderer->current) return;
++
++    int ow, oh;
++    wlr_output_transformed_resolution(renderer->current->wlr_output, &ow, &oh);
++    enum wl_output_transform transform = wlr_output_transform_invert(renderer->current->wlr_output->transform);
++
++    float matrix[9];
++    wlr_matrix_project_box(matrix, box, WL_OUTPUT_TRANSFORM_NORMAL, 0, renderer->current->wlr_output->transform_matrix);
++    struct wlr_fbox fbox = { .x = 0, .y = 0, .width = tex_w, .height = tex_h };
++
++    int nrects;
++    pixman_box32_t *rects = pixman_region32_rectangles(damage, &nrects);
++    for (int i = 0; i < nrects; i++) {
++        struct wlr_box damage_box = {.x = rects[i].x1, .y = rects[i].y1,
++                                     .width = rects[i].x2 - rects[i].x1, .height = rects[i].y2 - rects[i].y1};
++        struct wlr_box inters;
++        wlr_box_intersection(&inters, box, &damage_box);
++        if (wlr_box_empty(&inters)) continue;
++
++        wlr_box_transform(&inters, &inters, transform, ow, oh);
++        wm_renderer_scissor(renderer, &inters);
++        render_gl_texture_with_matrix(renderer, GL_TEXTURE_2D, tex, true, tex_w, tex_h, &fbox, matrix, opacity, box,
++                mask->x - box->x, mask->y - box->y,
++                box->x + box->width - mask->x - mask->width,
++                box->y + box->height - mask->y - mask->height, corner_radius, lock_perc);
++    }
++}
++
++#endif
+diff --git a/src/wm/wm_view.c b/src/wm/wm_view.c
+index 89cac20..53a2b10 100644
+--- a/src/wm/wm_view.c
++++ b/src/wm/wm_view.c
+@@ -8,6 +8,7 @@
+ #include <wlr/util/region.h>
+ 
+ #include "wm/wm_view.h"
++#include "wm/wm_ghost.h"
+ #include "wm/wm_seat.h"
+ #include "wm/wm_output.h"
+ #include "wm/wm_renderer.h"
+@@ -36,6 +37,8 @@ void wm_view_base_init(struct wm_view* view, struct wm_server* server){
+ 
+     view->fx_started = false;
+     view->fx_timer = NULL;
++    view->ghost_tex = 0;
++    view->ghost_w = view->ghost_h = 0;
+ 
+     view->shows_csd = false;
+ }
+@@ -45,6 +48,7 @@ static void wm_view_base_destroy(struct wm_content* super){
+ 
+     if(view->fx_timer) wl_event_source_remove(view->fx_timer);
+     view->fx_timer = NULL;
++    wm_ghost_drop_prepared(view);
+ 
+     (view->vtable->destroy)(view);
+     wm_content_base_destroy(super);
+diff --git a/src/wm/wm_view_xdg.c b/src/wm/wm_view_xdg.c
+index b4c4d79..6f89df9 100644
+--- a/src/wm/wm_view_xdg.c
++++ b/src/wm/wm_view_xdg.c
+@@ -9,6 +9,7 @@
+ #include <wlr/types/wlr_subcompositor.h>
+ 
+ #include "wm/wm_view_xdg.h"
++#include "wm/wm_ghost.h"
+ 
+ #include "wm/wm_util.h"
+ #include "wm/wm_config.h"
+@@ -151,6 +152,7 @@ static void handle_map(struct wl_listener* listener, void* data){
+ 
+ static void handle_unmap(struct wl_listener* listener, void* data){
+     struct wm_view_xdg* view = wl_container_of(listener, view, unmap);
++    wm_ghost_from_view(&view->super);
+     view->super.mapped = false;
+ 
+     wm_layout_damage_whole(view->super.super.wm_server->wm_layout);
+@@ -253,6 +255,15 @@ static void handle_surface_ack_configure(struct wl_listener* listener, void* dat
+     possibly_update_size(view);
+ }
+ 
++static void handle_surface_client_commit(struct wl_listener* listener, void* data){
++    struct wm_view_xdg* view = wl_container_of(listener, view, surface_client_commit);
++    struct wlr_surface* surface = view->wlr_xdg_surface->surface;
++    /* About to drop its buffer (unmap follows): remember how it looked */
++    if(view->super.mapped && (surface->pending.committed & WLR_SURFACE_STATE_BUFFER) && !surface->pending.buffer){
++        wm_ghost_prepare(&view->super);
++    }
++}
++
+ static void handle_surface_commit(struct wl_listener* listener, void* data){
+     struct wm_view_xdg* view = wl_container_of(listener, view, surface_commit);
+ 
+@@ -487,6 +498,9 @@ void wm_view_xdg_init(struct wm_view_xdg* view, struct wm_server* server, struct
+     view->surface_commit.notify = &handle_surface_commit;
+     wl_signal_add(&surface->surface->events.commit, &view->surface_commit);
+ 
++    view->surface_client_commit.notify = &handle_surface_client_commit;
++    wl_signal_add(&surface->surface->events.client_commit, &view->surface_client_commit);
++
+     view->surface_configure.notify = &handle_surface_configure;
+     wl_signal_add(&surface->events.configure, &view->surface_configure);
+ 
+@@ -555,6 +569,7 @@ static void wm_view_xdg_destroy(struct wm_view* super){
+     wl_list_remove(&view->new_subsurface.link);
+ 
+     wl_list_remove(&view->surface_commit.link);
++    wl_list_remove(&view->surface_client_commit.link);
+     wl_list_remove(&view->surface_configure.link);
+     wl_list_remove(&view->surface_ack_configure.link);
+ 
+diff --git a/src/wm/wm_view_xwayland.c b/src/wm/wm_view_xwayland.c
+index 23c1e6a..cfea3e0 100644
+--- a/src/wm/wm_view_xwayland.c
++++ b/src/wm/wm_view_xwayland.c
+@@ -9,6 +9,7 @@
+ 
+ #include "wm/wm_util.h"
+ #include "wm/wm_view_xwayland.h"
++#include "wm/wm_ghost.h"
+ #include "wm/wm_view.h"
+ #include "wm/wm_seat.h"
+ #include "wm/wm_server.h"
+@@ -145,6 +146,8 @@ static void handle_set_parent(struct wl_listener* listener, void* data){
+     try_to_find_parent(view);
+ }
+ 
++static void handle_surface_client_commit(struct wl_listener* listener, void* data);
++
+ static void handle_map(struct wl_listener* listener, void* data){
+     struct wm_view_xwayland* view = wl_container_of(listener, view, map);
+ 
+@@ -163,10 +166,13 @@ static void handle_map(struct wl_listener* listener, void* data){
+ 
+     assert(view->wlr_xwayland_surface->surface);
+     wl_signal_add(&view->wlr_xwayland_surface->surface->events.commit, &view->surface_commit);
++    view->surface_client_commit.notify = &handle_surface_client_commit;
++    wl_signal_add(&view->wlr_xwayland_surface->surface->events.client_commit, &view->surface_client_commit);
+ }
+ 
+ static void handle_unmap(struct wl_listener* listener, void* data){
+     struct wm_view_xwayland* view = wl_container_of(listener, view, unmap);
++    if(view->wlr_xwayland_surface->surface) wm_ghost_from_view(&view->super);
+     view->super.mapped = false;
+ 
+     wm_layout_damage_whole(view->super.super.wm_server->wm_layout);
+@@ -180,6 +186,14 @@ static void handle_destroy(struct wl_listener* listener, void* data){
+     free(view);
+ }
+ 
++static void handle_surface_client_commit(struct wl_listener* listener, void* data){
++    struct wm_view_xwayland* view = wl_container_of(listener, view, surface_client_commit);
++    struct wlr_surface* surface = view->wlr_xwayland_surface->surface;
++    if(surface && view->super.mapped && (surface->pending.committed & WLR_SURFACE_STATE_BUFFER) && !surface->pending.buffer){
++        wm_ghost_prepare(&view->super);
++    }
++}
++
+ static void handle_surface_commit(struct wl_listener* listener, void* data){
+     struct wm_view_xwayland* view = wl_container_of(listener, view, surface_commit);
+ 
+@@ -267,7 +281,10 @@ static void wm_view_xwayland_destroy(struct wm_view* super){
+     wl_list_remove(&view->map.link);
+     wl_list_remove(&view->unmap.link);
+     wl_list_remove(&view->destroy.link);
+-    if(view->super.mapped) wl_list_remove(&view->surface_commit.link);
++    if(view->super.mapped){
++        wl_list_remove(&view->surface_commit.link);
++        wl_list_remove(&view->surface_client_commit.link);
++    }
+ }
+ 
+ static void wm_view_xwayland_get_credentials(struct wm_view* super, pid_t* pid, uid_t* uid, gid_t* gid){
+-- 
+2.55.0
+

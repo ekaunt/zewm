@@ -45,13 +45,26 @@ provides=('zewm')
 # same python packages (newm, pywm) as newm
 conflicts=('zewm' 'newm' 'newm-git' 'newm-atha-git' 'newm-next-git' 'newm-next-git-qs')
 source=(
-	'git+https://github.com/newm-next/pywm-next'
+	# pinned: the pywm-*.patch series below is based on this upstream commit
+	'git+https://github.com/newm-next/pywm-next#commit=2dac241e98156a517184d7285e3362e44bb6577a'
 	'git+https://github.com/ekaunt/zewm'
 	'wlroots-switch-default.patch'
+	'pywm-0001-Tron-shaders-frame-clock-animated-primitives-window-.patch'
+	'pywm-0002-tron_grid-flat-2D-tile-grid-with-parallax-layers.patch'
+	'pywm-0003-tron_border-smooth-streaks-redraw-every-vblank.patch'
+	'pywm-0004-tron_grid-four-denser-parallax-layers-with-motion-bl.patch'
+	'pywm-0005-callbetter.com-look-tron_cb_grid-tron_cb_border-cb-w.patch'
+	'pywm-0006-callbetter-look-close-ghost-derez-light-cycle-focus-.patch'
 )
 sha512sums=('SKIP'
             'SKIP'
-            '6976e92efcbcc0ad26ff6fbb268a9c34584e232de9b8b53828798681bb7db7e3c3246ce866159a96991bbc860a63923d46ef7f79ddf62b045cb7b2d880b97282')
+            '6976e92efcbcc0ad26ff6fbb268a9c34584e232de9b8b53828798681bb7db7e3c3246ce866159a96991bbc860a63923d46ef7f79ddf62b045cb7b2d880b97282'
+            '9f4f2157516f45722972a5cdbb82d1547a00e4d2ae49c0413e5171056b78e903691a9e1a01cd98529d99ed3bac820979999754472cd8548bed1e82f8dcb62f55'
+            '61150ff285d5fcdde84921ba610164004a1b125f6de5e1d9c64fd461adfc9e2c7aeec2aaf907005be79dc219f35dfd0ae8a82d1da0ff29ad651601b5f288c9dd'
+            'dbe11b9d7a1222c68b07566e5cf5ccff5317b642f41f052b2217b4254a5cadfebf59613acdefbf310fdea683764dc67839209291e4cd2042d7ce2b3d6ff7a3c2'
+            'f12e7a0a0fee535df64c0d20166c6a9db607c648d079bd2619881409b36d88916e0a831da4df79c88d48cf065ac52e4dcdbfa8005c3bf6814be6b66b3b80459e'
+            '9c36d59eecc2df0d4ea76e9e27e0d99fdcf93aa6563439c0f042c6398173d8561fd0fa817081588f5a20ac9a90a653a6f18cdf58408c248bb2577fa4f78d2e85'
+            '10933195a41551cd30e3db2bdeb42c6df87366126ced9e0cb53cbe4df11c853268b26b1c2d57b804b82bd5a2f71913416594b2fdca756edbc2ca717a1d542454')
 
 pkgver() {
 	cd "$srcdir/$_pkgname"
@@ -63,6 +76,11 @@ prepare() {
 	git submodule update --init --recursive
 	# newer libinput has switch types this wlroots doesn't handle
 	patch -d subprojects/wlroots -p1 < "$srcdir/wlroots-switch-default.patch"
+	# zewm's own pywm-next work (tron look, derez ghost, light cycle), in order;
+	# regenerate with: git -C pywm-next format-patch <base>..tron
+	for p in "$srcdir"/pywm-*.patch; do
+		patch -Np1 < "$p"
+	done
 }
 
 build() {

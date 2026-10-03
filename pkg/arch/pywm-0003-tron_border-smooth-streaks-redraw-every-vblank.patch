@@ -1,0 +1,156 @@
+From da20a2955ed22c3ca8c88b0cf4f0d32ca8618023 Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Tue, 29 Sep 2026 19:14:01 -0400
+Subject: [PATCH 3/6] tron_border: smooth streaks, redraw every vblank
+
+Parameterise the streak by true arc length around the rounded corners
+(no jump at corners), give the head a soft front and fade the tail out
+before it wraps (no seam at head/tail). Animated primitives and the
+rez-in now redraw every vblank at anim_fps >= 60 instead of a 16 ms
+timer, which with the vblank wait halved the frame rate.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ .../primitive/tron_border/fragment.glsl       | 73 +++++++++++++------
+ src/wm/wm_view.c                              |  2 +-
+ src/wm/wm_widget.c                            |  3 +-
+ 3 files changed, 53 insertions(+), 25 deletions(-)
+
+diff --git a/src/wm/shaders/primitive/tron_border/fragment.glsl b/src/wm/shaders/primitive/tron_border/fragment.glsl
+index d393162..ffbc76c 100644
+--- a/src/wm/shaders/primitive/tron_border/fragment.glsl
++++ b/src/wm/shaders/primitive/tron_border/fragment.glsl
+@@ -1,4 +1,4 @@
+-precision mediump float;
++precision highp float;
+ /*
+  * 0-3   primary color (r, g, b, a)
+  * 4-7   secondary color (r, g, b, a) - the second light cycle
+@@ -16,11 +16,45 @@ varying vec2 v_texcoord;
+ uniform float width;
+ uniform float height;
+ 
++const float HALF_PI = 1.5707963;
++
++/* Arc length along the rounded rectangle, clockwise from the left end of the top edge */
++float perimeter_pos(vec2 p, float a, float b, float r){
++    float lq = HALF_PI * r;
++    vec2 ap = abs(p);
++    if(ap.x > a && ap.y > b){
++        vec2 d = p - vec2(sign(p.x) * a, sign(p.y) * b);
++        float ang;
++        float base;
++        if(p.x > 0.0 && p.y < 0.0){ ang = atan(d.x, -d.y); base = 2.0 * a; }
++        else if(p.x > 0.0){ ang = atan(d.y, d.x); base = 2.0 * a + lq + 2.0 * b; }
++        else if(p.y > 0.0){ ang = atan(-d.x, d.y); base = 4.0 * a + 2.0 * b + 2.0 * lq; }
++        else { ang = atan(-d.y, -d.x); base = 4.0 * a + 4.0 * b + 3.0 * lq; }
++        return base + clamp(ang, 0.0, HALF_PI) * r;
++    }
++    bool horizontal = ap.x <= a && (ap.y > b || (a - ap.x) > (b - ap.y));
++    if(horizontal){
++        return p.y < 0.0 ? p.x + a : 2.0 * a + 2.0 * lq + 2.0 * b + (a - p.x);
++    }
++    return p.x > 0.0 ? 2.0 * a + lq + (p.y + b) : 4.0 * a + 2.0 * b + 3.0 * lq + (b - p.y);
++}
++
++/* Brightness of a streak whose head is delta px ahead (delta > 0: behind the head) */
++vec2 streak(float delta, float perim){
++    float tail = 0.35 * perim;
++    float behind = max(delta, 0.0);
++    float ahead = max(-delta, 0.0);
++    /* Tail fades to nothing before the wrap point, head has a soft front */
++    float body = exp(-3.0 * behind / tail) * (1.0 - smoothstep(tail, 0.5 * perim, behind)) * exp(-ahead / 3.0);
++    float head = exp(-abs(delta) / 8.0);
++    return vec2(body, head);
++}
++
+ void main() {
+     vec2 p = (v_texcoord - 0.5) * vec2(width, height);
+     float inset = params_float[10];
+     vec2 half_ext = 0.5 * vec2(width, height) - inset;
+-    float r = min(params_float[8], min(half_ext.x, half_ext.y));
++    float r = max(min(params_float[8], min(half_ext.x, half_ext.y)), 0.0);
+ 
+     /* Signed distance to the rounded rectangle the line runs along */
+     vec2 q = abs(p) - half_ext + r;
+@@ -31,35 +65,28 @@ void main() {
+     float core = 1.0 - smoothstep(lw - 0.75, lw + 0.75, dist);
+     float glow = exp(-max(dist - lw, 0.0) / max(params_float[11], 0.1));
+ 
+-    /* Position along the perimeter, clockwise from the top left corner */
+-    float hw = half_ext.x;
+-    float hh = half_ext.y;
+-    float perim = 4.0 * (hw + hh);
+-    float s;
+-    if(hw - abs(p.x) < hh - abs(p.y)){
+-        s = p.x > 0.0 ? 2.0 * hw + (p.y + hh) : 4.0 * hw + 2.0 * hh + (hh - p.y);
+-    }else{
+-        s = p.y < 0.0 ? (p.x + hw) : 2.0 * hw + 2.0 * hh + (hw - p.x);
+-    }
++    float a = half_ext.x - r;
++    float b = half_ext.y - r;
++    float perim = 4.0 * (a + b) + 4.0 * HALF_PI * r;
++    float s = perimeter_pos(p, a, b, r);
+ 
+     float head = fract(time * params_float[12]) * perim;
+-    float tail = 0.35 * perim;
+-    float b1 = mod(head - s, perim);
+-    float b2 = mod(head + 0.5 * perim - s, perim);
+-    float st1 = exp(-3.0 * b1 / tail) + 2.0 * exp(-b1 / 6.0);
+-    float st2 = exp(-3.0 * b2 / tail) + 2.0 * exp(-b2 / 6.0);
++    float d1 = mod(head - s + 0.5 * perim, perim) - 0.5 * perim;
++    float d2 = mod(head - s, perim) - 0.5 * perim;
++    vec2 st1 = streak(d1, perim);
++    vec2 st2 = streak(d2, perim);
+ 
+     float pulse = 0.8 + 0.2 * sin(time * 2.2);
+ 
+     vec3 c1 = vec3(params_float[0], params_float[1], params_float[2]);
+     vec3 c2 = vec3(params_float[4], params_float[5], params_float[6]);
+ 
+-    vec3 base = c1 * (core * pulse + glow * 0.55 * pulse);
+-    vec3 streaks = (c1 * st1 + c2 * st2) * (core * 1.2 + glow * 0.8);
+-    /* White-hot centre of the line near each streak head */
+-    vec3 hot = vec3(1.0) * core * (exp(-b1 / 10.0) + exp(-b2 / 10.0)) * 0.8;
++    vec3 base = c1 * (core + glow * 0.55) * pulse;
++    vec3 streaks = (c1 * (st1.x + 1.5 * st1.y) + c2 * (st2.x + 1.5 * st2.y)) * (core * 1.2 + glow * 0.8);
++    /* White-hot centre of the line at each head */
++    vec3 hot = vec3(0.8) * core * (st1.y + st2.y);
+ 
+     vec3 col = base + streaks + hot;
+-    float a = clamp(max(core, glow * 0.6) * params_float[3], 0.0, 1.0);
+-    gl_FragColor = vec4(col * params_float[3], a) * alpha;
++    float alpha_out = clamp(max(core, glow * 0.6) * params_float[3], 0.0, 1.0);
++    gl_FragColor = vec4(col * params_float[3], alpha_out) * alpha;
+ }
+diff --git a/src/wm/wm_view.c b/src/wm/wm_view.c
+index 04e7f0c..625d8e7 100644
+--- a/src/wm/wm_view.c
++++ b/src/wm/wm_view.c
+@@ -209,7 +209,7 @@ static void wm_view_render(struct wm_content* super, struct wm_output* output, p
+         }
+         if(view->fx_timer){
+             int fps = super->wm_server->wm_config->anim_fps;
+-            wl_event_source_timer_update(view->fx_timer, fps > 0 ? 1000 / fps : 16);
++            wl_event_source_timer_update(view->fx_timer, fps >= 60 ? 1 : 1000 / fps);
+         }
+     }
+ }
+diff --git a/src/wm/wm_widget.c b/src/wm/wm_widget.c
+index e776f03..708143f 100644
+--- a/src/wm/wm_widget.c
++++ b/src/wm/wm_widget.c
+@@ -136,8 +136,9 @@ static void wm_widget_render(struct wm_content* super, struct wm_output* output,
+                 widget->anim_timer = wl_event_loop_add_timer(super->wm_server->wl_event_loop, anim_timer_handler, widget);
+             }
+             if(widget->anim_timer){
++                /* At >= 60 fps redraw every vblank: the next frame waits for it anyway */
+                 int fps = super->wm_server->wm_config->anim_fps;
+-                wl_event_source_timer_update(widget->anim_timer, fps > 0 ? 1000 / fps : 16);
++                wl_event_source_timer_update(widget->anim_timer, fps >= 60 ? 1 : 1000 / fps);
+                 widget->anim_pending = true;
+             }
+         }
+-- 
+2.55.0
+
