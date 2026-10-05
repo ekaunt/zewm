@@ -354,6 +354,9 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         # Handle of the last focused regular (non-layer, non-panel) view, so
         # closing a layer surface such as rofi returns focus to it.
         self.last_regular_focus: Optional[int] = None
+        # The regular view focused before last_regular_focus, for when the
+        # last one is itself the floating window that closes (flameshot overlay)
+        self.prev_regular_focus: Optional[int] = None
 
         # (workspace handle, i, j) of the tile the next new window opens in
         self.preselect: Optional[tuple[int, int, int]] = None
@@ -1098,12 +1101,16 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         best_view: Optional[int] = None
         if view.is_focused():
             logger.debug("Finding view to focus since %s closes...", view)
-            # A layer surface (rofi, launcher) took focus briefly: give it back
-            # to the window the user came from, not the one nearest the centre.
-            if (view.role == "layer" or view.is_panel()) and \
-                    self.last_regular_focus in self._views and \
-                    self.last_regular_focus != view._handle:
-                best_view = self.last_regular_focus
+            # A layer surface (rofi, launcher) or a floating window (flameshot's
+            # full-screen overlay, dialogs) took focus briefly: give it back to
+            # the window the user came from. The nearest-to-centre fallback
+            # below picks an arbitrary window and pans the viewport to it.
+            if view.role == "layer" or view.is_panel() or not view.is_tiled(self.state):
+                back = self.last_regular_focus
+                if back == view._handle:
+                    back = self.prev_regular_focus
+                if back is not None and back != view._handle and back in self._views:
+                    best_view = back
             if view.parent is not None:
                 p = cast(View, view.parent)
                 while not p.is_tiled(self.state) and p.parent is not None:

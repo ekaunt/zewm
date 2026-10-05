@@ -1200,6 +1200,8 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
             self.wm.focus_hint(self)
             self.wm.focus_borders.update_focus(self)
             if self.role != "layer" and not self.is_panel():
+                if self.wm.last_regular_focus != self._handle:
+                    self.wm.prev_regular_focus = self.wm.last_regular_focus
                 self.wm.last_regular_focus = self._handle
             self.wm.warp_cursor_to_focus(self)
         if self._ssd is not None:
