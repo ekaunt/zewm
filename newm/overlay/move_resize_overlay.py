@@ -596,6 +596,10 @@ class MoveResizeOverlay(Overlay, Thread):
             ))
             return True
 
+        if gesture.kind == conf_gesture_binding_move_resize()[1] and not self.layout.left_button_down:
+            # Super + pointer motion without the left button: not a drag
+            return True
+
         if gesture.kind == conf_gesture_binding_move_resize()[1] and conf_follow_cursor():
             if isinstance(self.overlay, CursorMoveOverlay):
                 self.overlay.reset_gesture()
@@ -604,8 +608,11 @@ class MoveResizeOverlay(Overlay, Thread):
                 self.overlay = CursorMoveOverlay(self.layout, self.view)
             ovr = self.overlay
             def segment_finished() -> None:
-                # pointer pauses end the gesture; only drop once the modifier is released
-                if self.overlay is ovr and not self.layout.modifiers.has(conf_gesture_binding_move_resize()[0]):
+                # pointer pauses end the gesture; only drop once the modifier or
+                # the left button is released
+                if self.overlay is ovr and (
+                        not self.layout.modifiers.has(conf_gesture_binding_move_resize()[0])
+                        or not self.layout.left_button_down):
                     self.finish()
             gesture.listener(GestureListener(ovr.on_gesture, segment_finished))
             return True

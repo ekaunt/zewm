@@ -350,6 +350,11 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         # Button holding a Super+drag of a floating window (BTN_LEFT move,
         # BTN_RIGHT resize), or None
         self._float_drag_button: Optional[int] = None
+        # Left button state: a Super move gesture only drags a window while it
+        # is held (Super + pointer motion alone must not move anything)
+        self.left_button_down: bool = False
+        # Super+left press on a tiled window, kept from the client; its release too
+        self._tiled_drag_click: bool = False
         self._key_input_at: float = 0.0
         # Handle of the last focused regular (non-layer, non-panel) view, so
         # closing a layer surface such as rofi returns focus to it.
@@ -878,6 +883,14 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
 
         # Super+left drag moves, Super+right drag resizes a floating window
         BTN_LEFT, BTN_RIGHT = 0x110, 0x111
+        if button == BTN_LEFT:
+            self.left_button_down = state == PYWM_PRESSED
+        if state != PYWM_PRESSED and button == BTN_LEFT and self._tiled_drag_click:
+            # Releasing the button drops a tiled window being dragged
+            self._tiled_drag_click = False
+            if isinstance(self.overlay, MoveResizeOverlay):
+                self.overlay.finish()
+            return True
         if state != PYWM_PRESSED and button == self._float_drag_button:
             # handled here, not in the overlay: a quick click can release the
             # button before the overlay is ready, which would leave it stuck
@@ -901,6 +914,11 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
                     self.enter_overlay(MoveResizeFloatingOverlay(
                         self, view, mode="resize" if button == BTN_RIGHT else "move"))
                     return True
+            elif button == BTN_LEFT and view is not None and view.is_tiled(self.state):
+                # The drag itself starts from the move gesture, now that the
+                # button is held; keep the click from the client
+                self._tiled_drag_click = True
+                return True
 
         if self.overlay is not None and self.overlay.ready():
             return self.overlay.on_button(time_msec, button, state)
@@ -964,7 +982,9 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             return self.overlay.on_gesture(gesture)
         elif self.overlay is None:
             if self.modifiers.has(conf_gesture_binding_move_resize()[0]) and (
-                gesture.kind == conf_gesture_binding_move_resize()[1]
+                # a move needs the left button held: Super + pointer motion alone
+                # must not drag windows
+                (gesture.kind == conf_gesture_binding_move_resize()[1] and self.left_button_down)
                 or gesture.kind == conf_gesture_binding_move_resize()[2]
             ):
                 logger.debug("...MoveResize")
