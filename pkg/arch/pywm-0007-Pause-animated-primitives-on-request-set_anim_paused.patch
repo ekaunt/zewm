@@ -1,0 +1,132 @@
+From bbc60cb0e3e5f6ebcc1016b053768b68276be14d Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Mon, 5 Oct 2026 15:41:11 -0400
+Subject: [PATCH 7/7] Pause animated primitives on request (set_anim_paused)
+
+tron_* primitives reschedule a redraw after every frame forever. That keeps
+an atomic commit waiting on GPU fences almost all the time, which shows up as
+a D-state events_unbound kworker (commit_tail -> wait_for_fences), and
+hibernate-preflight refuses to hibernate on any D-state worker.
+
+Add a server flag that stops the reschedule (the current frame stays on
+screen) and expose it as PyWM.pause_animations() / resume_animations();
+resume redraws once to restart the loop.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ include/wm/wm_server.h |  6 ++++++
+ pywm/pywm.py           | 12 +++++++++++-
+ src/py/_pywmmodule.c   | 15 +++++++++++++++
+ src/wm/wm_server.c     |  1 +
+ src/wm/wm_widget.c     |  3 ++-
+ 5 files changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/include/wm/wm_server.h b/include/wm/wm_server.h
+index e60f86f..627c946 100644
+--- a/include/wm/wm_server.h
++++ b/include/wm/wm_server.h
+@@ -67,6 +67,12 @@ struct wm_server{
+ 
+     int constant_damage_mode;
+     struct wl_event_source* callback_timer;
++
++    /* While set, animated (tron_*) primitives draw their current frame but do not
++     * schedule the next one, so the screen goes static. Set on PrepareForSleep:
++     * a frame always in flight shows up as a D-state atomic-commit worker, which
++     * hibernate-preflight treats as a hang and refuses. */
++    int anim_paused;
+ };
+ 
+ void wm_server_init(struct wm_server* server, struct wm_config* config);
+diff --git a/pywm/pywm.py b/pywm/pywm.py
+index 3fafffb..73c9f04 100644
+--- a/pywm/pywm.py
++++ b/pywm/pywm.py
+@@ -13,7 +13,8 @@ from .damage_tracked import DamageTracked
+ from ._pywm import (
+     run,
+     register,
+-    damage
++    damage,
++    set_anim_paused
+ )
+ 
+ PYWM_MOD_SHIFT = 1
+@@ -458,6 +459,15 @@ class PyWM(Generic[ViewT], DamageTracked):
+     def damage_once(self) -> None:
+         damage(2)
+ 
++    def pause_animations(self) -> None:
++        """Stop the endless redraw of animated (tron_*) primitives; the screen goes static"""
++        set_anim_paused(1)
++
++    def resume_animations(self) -> None:
++        set_anim_paused(0)
++        # Paused primitives scheduled no next frame: redraw once to restart them
++        damage(2)
++
+     """
+     Public API
+     """
+diff --git a/src/py/_pywmmodule.c b/src/py/_pywmmodule.c
+index f2ae4e4..cae62b1 100644
+--- a/src/py/_pywmmodule.c
++++ b/src/py/_pywmmodule.c
+@@ -238,6 +238,20 @@ static PyObject* _pywm_damage(PyObject* self, PyObject* args){
+     return Py_None;
+ }
+ 
++static PyObject* _pywm_set_anim_paused(PyObject* self, PyObject* args){
++    int paused;
++
++    if(!PyArg_ParseTuple(args, "i", &paused)){
++        PyErr_SetString(PyExc_TypeError, "Invalid parameters");
++        return NULL;
++    }
++
++    get_wm()->server->anim_paused = paused ? 1 : 0;
++
++    Py_INCREF(Py_None);
++    return Py_None;
++}
++
+ static PyObject* _pywm_debugperformance(PyObject* self, PyObject* args){
+     const char* key;
+ 
+@@ -257,6 +271,7 @@ static PyMethodDef _pywm_methods[] = {
+     { "run",                       (PyCFunction)_pywm_run,           METH_VARARGS | METH_KEYWORDS,   "Start the compositor in this thread" },
+     { "register",                  _pywm_register,                   METH_VARARGS,                   "Register callback"  },
+     { "damage",                    _pywm_damage,                     METH_VARARGS,                   "Track damage, or set mode to continuous damage"  },
++    { "set_anim_paused",           _pywm_set_anim_paused,            METH_VARARGS,                   "Pause (1) or resume (0) the redraw loop of animated primitives"  },
+     { "debug_performance",         _pywm_debugperformance,           METH_VARARGS,                   "Debug uitlity - uses DEBUG_PERFORMANCE macro"  },
+ 
+     { NULL, NULL, 0, NULL }
+diff --git a/src/wm/wm_server.c b/src/wm/wm_server.c
+index 0f1dc23..6790739 100644
+--- a/src/wm/wm_server.c
++++ b/src/wm/wm_server.c
+@@ -366,6 +366,7 @@ void wm_server_init(struct wm_server* server, struct wm_config* config){
+     wm_server_reconfigure(server);
+ 
+     server->constant_damage_mode = 0;
++    server->anim_paused = 0;
+ }
+ 
+ void wm_server_destroy(struct wm_server* server){
+diff --git a/src/wm/wm_widget.c b/src/wm/wm_widget.c
+index 708143f..51925ca 100644
+--- a/src/wm/wm_widget.c
++++ b/src/wm/wm_widget.c
+@@ -131,7 +131,8 @@ static void wm_widget_render(struct wm_content* super, struct wm_output* output,
+ #endif
+ 
+         /* Keep animated primitives moving: request the next redraw */
+-        if(is_animated_primitive(widget->primitive.name) && !widget->anim_pending){
++        if(is_animated_primitive(widget->primitive.name) && !widget->anim_pending &&
++                !super->wm_server->anim_paused){
+             if(!widget->anim_timer){
+                 widget->anim_timer = wl_event_loop_add_timer(super->wm_server->wl_event_loop, anim_timer_handler, widget);
+             }
+-- 
+2.56.0
+

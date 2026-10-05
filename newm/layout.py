@@ -1038,11 +1038,18 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             conf_idle_callback()("idle")
 
     def on_sleep(self) -> None:
+        # Freeze the animated (tron) widgets before anything else. Their endless
+        # redraw keeps an atomic commit waiting on GPU fences almost all the time,
+        # a D-state kworker that hibernate-preflight takes for a hang and refuses.
+        self.pause_animations()
         conf_idle_callback()("sleep")
         if conf_lock_on_wakeup():
             self.ensure_locked(anim=False)
 
     def on_wakeup(self) -> None:
+        # Also reached when the sleep was refused: logind always sends
+        # PrepareForSleep(false) when the operation finishes
+        self.resume_animations()
         conf_idle_callback()("wakeup")
         if conf_lock_on_wakeup():
             self.ensure_locked()

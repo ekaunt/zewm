@@ -55,6 +55,7 @@ source=(
 	'pywm-0004-tron_grid-four-denser-parallax-layers-with-motion-bl.patch'
 	'pywm-0005-callbetter.com-look-tron_cb_grid-tron_cb_border-cb-w.patch'
 	'pywm-0006-callbetter-look-close-ghost-derez-light-cycle-focus-.patch'
+	'pywm-0007-Pause-animated-primitives-on-request-set_anim_paused.patch'
 )
 sha512sums=('SKIP'
             'SKIP'
@@ -64,7 +65,8 @@ sha512sums=('SKIP'
             'dbe11b9d7a1222c68b07566e5cf5ccff5317b642f41f052b2217b4254a5cadfebf59613acdefbf310fdea683764dc67839209291e4cd2042d7ce2b3d6ff7a3c2'
             'f12e7a0a0fee535df64c0d20166c6a9db607c648d079bd2619881409b36d88916e0a831da4df79c88d48cf065ac52e4dcdbfa8005c3bf6814be6b66b3b80459e'
             '9c36d59eecc2df0d4ea76e9e27e0d99fdcf93aa6563439c0f042c6398173d8561fd0fa817081588f5a20ac9a90a653a6f18cdf58408c248bb2577fa4f78d2e85'
-            '10933195a41551cd30e3db2bdeb42c6df87366126ced9e0cb53cbe4df11c853268b26b1c2d57b804b82bd5a2f71913416594b2fdca756edbc2ca717a1d542454')
+            '10933195a41551cd30e3db2bdeb42c6df87366126ced9e0cb53cbe4df11c853268b26b1c2d57b804b82bd5a2f71913416594b2fdca756edbc2ca717a1d542454'
+            '8b233743db260ba53e535472d7790652a54af5714917ea94552ad5681dcb389b422618e483585ad0c11f600fc3c40b9605ece4116bdf48b24d566b65800e1c9f')
 
 pkgver() {
 	cd "$srcdir/$_pkgname"
