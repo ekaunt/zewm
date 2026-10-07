@@ -47,7 +47,8 @@ conflicts=('zewm' 'newm' 'newm-git' 'newm-atha-git' 'newm-next-git' 'newm-next-g
 source=(
 	# pinned: the pywm-*.patch series below is based on this upstream commit
 	'git+https://github.com/newm-next/pywm-next#commit=2dac241e98156a517184d7285e3362e44bb6577a'
-	'git+https://github.com/ekaunt/zewm'
+	# tron: the branch that carries the tron/callbetter look these patches belong to
+	'git+https://github.com/ekaunt/zewm#branch=tron'
 	'wlroots-switch-default.patch'
 	'pywm-0001-Tron-shaders-frame-clock-animated-primitives-window-.patch'
 	'pywm-0002-tron_grid-flat-2D-tile-grid-with-parallax-layers.patch'
@@ -56,6 +57,9 @@ source=(
 	'pywm-0005-callbetter.com-look-tron_cb_grid-tron_cb_border-cb-w.patch'
 	'pywm-0006-callbetter-look-close-ghost-derez-light-cycle-focus-.patch'
 	'pywm-0007-Pause-animated-primitives-on-request-set_anim_paused.patch'
+	'pywm-0008-Keep-a-copy-of-the-xcursor-theme-name.patch'
+	'pywm-0009-Support-the-cursor-shape-protocol-wp_cursor_shape_v1.patch'
+	'pywm-0010-Click-effect-shaders-tron_cb_cycles-hex-ring-lock-ta.patch'
 )
 sha512sums=('SKIP'
             'SKIP'
@@ -66,7 +70,10 @@ sha512sums=('SKIP'
             'f12e7a0a0fee535df64c0d20166c6a9db607c648d079bd2619881409b36d88916e0a831da4df79c88d48cf065ac52e4dcdbfa8005c3bf6814be6b66b3b80459e'
             '9c36d59eecc2df0d4ea76e9e27e0d99fdcf93aa6563439c0f042c6398173d8561fd0fa817081588f5a20ac9a90a653a6f18cdf58408c248bb2577fa4f78d2e85'
             '10933195a41551cd30e3db2bdeb42c6df87366126ced9e0cb53cbe4df11c853268b26b1c2d57b804b82bd5a2f71913416594b2fdca756edbc2ca717a1d542454'
-            '8b233743db260ba53e535472d7790652a54af5714917ea94552ad5681dcb389b422618e483585ad0c11f600fc3c40b9605ece4116bdf48b24d566b65800e1c9f')
+            '8b233743db260ba53e535472d7790652a54af5714917ea94552ad5681dcb389b422618e483585ad0c11f600fc3c40b9605ece4116bdf48b24d566b65800e1c9f'
+            '5034032c03c12ec5011cc8ce189e060137bb165ad668f5ad247e776292068946e4afa2c9908ec6cbfd43c325763e0926413cb64b321a289f534d5650100e1ef8'
+            'd3aa858a4188fb0c5508752eb49cec0d2a23e79b3ff8833790a245bd07f85d17b729bd76fd13e0cc68736bfc34c6a2cd2fba7f70575cc9ad0c641867727e00b8'
+            'e344e8ea85165510b0247188f5235355d3898da65adf38b4f4fd0734d77e0d890d2b96f1857dc2d76e9486142395fb9239853a50de091022fe4af6a75a55e140')
 
 pkgver() {
 	cd "$srcdir/$_pkgname"

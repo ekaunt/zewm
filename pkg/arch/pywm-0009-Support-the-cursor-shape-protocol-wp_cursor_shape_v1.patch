@@ -1,0 +1,292 @@
+From 50401a5b611aedfe6b0533e190c2fcf29468b28c Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Tue, 6 Oct 2026 23:51:30 -0400
+Subject: [PATCH 09/10] Support the cursor shape protocol (wp_cursor_shape_v1)
+
+Clients can name a cursor shape instead of attaching a surface. The CSS
+shape names map to xcursor names; a theme without the name falls back to
+the arrow.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/wm/wm_cursor.h       |   5 ++
+ include/wm/wm_cursor_shape.h |  13 ++++
+ meson.build                  |   1 +
+ protocols/meson.build        |   1 +
+ src/wm/wm_cursor.c           |  12 ++++
+ src/wm/wm_cursor_shape.c     | 127 +++++++++++++++++++++++++++++++++++
+ src/wm/wm_server.c           |   2 +
+ 7 files changed, 161 insertions(+)
+ create mode 100644 include/wm/wm_cursor_shape.h
+ create mode 100644 src/wm/wm_cursor_shape.c
+
+diff --git a/include/wm/wm_cursor.h b/include/wm/wm_cursor.h
+index 6927f3b..2b3a570 100644
+--- a/include/wm/wm_cursor.h
++++ b/include/wm/wm_cursor.h
+@@ -46,6 +46,9 @@ struct wm_cursor {
+         int32_t hotspot_x;
+         int32_t hotspot_y;
+     } client_image;
++
++    /* Shape named by the client (wp_cursor_shape_v1) instead of a surface; NULL if none */
++    const char* client_shape;
+ };
+ 
+ void wm_cursor_init(struct wm_cursor* cursor, struct wm_seat* seat, struct wm_layout* layout);
+@@ -53,6 +56,8 @@ void wm_cursor_ensure_loaded_for_scale(struct wm_cursor* cursor, double scale);
+ 
+ void wm_cursor_set_visible(struct wm_cursor* cursor, int visible);
+ void wm_cursor_set_image(struct wm_cursor* cursor, const char* image);
++/* shape must outlive the cursor (string literal) */
++void wm_cursor_set_image_shape(struct wm_cursor* cursor, const char* shape);
+ void wm_cursor_set_image_surface(struct wm_cursor* cursor, struct wlr_surface* surface, int32_t hotspot_x, int32_t hotspot_y);
+ void wm_cursor_set_position(struct wm_cursor* cursor, int pos_x, int pos_y);
+ 
+diff --git a/include/wm/wm_cursor_shape.h b/include/wm/wm_cursor_shape.h
+new file mode 100644
+index 0000000..bd2e568
+--- /dev/null
++++ b/include/wm/wm_cursor_shape.h
+@@ -0,0 +1,13 @@
++#ifndef WM_CURSOR_SHAPE_H
++#define WM_CURSOR_SHAPE_H
++
++struct wm_server;
++
++/*
++ * wp_cursor_shape_manager_v1 (wlroots 0.16 has none): clients name a cursor
++ * shape and the compositor draws it from its own xcursor theme. GTK >= 4.22
++ * ignores cursor themes on Wayland and only gets a themed cursor this way.
++ */
++void wm_cursor_shape_create(struct wm_server* server);
++
++#endif
+diff --git a/meson.build b/meson.build
+index cb2a580..cfcccae 100644
+--- a/meson.build
++++ b/meson.build
+@@ -80,6 +80,7 @@ sources = [
+     'src/wm/wm_keyboard.c',
+     'src/wm/wm_pointer.c',
+     'src/wm/wm_cursor.c',
++    'src/wm/wm_cursor_shape.c',
+     'src/wm/wm_layout.c',
+     'src/wm/wm_output.c',
+     'src/wm/wm_content.c',
+diff --git a/protocols/meson.build b/protocols/meson.build
+index a031245..6eabace 100644
+--- a/protocols/meson.build
++++ b/protocols/meson.build
+@@ -39,6 +39,7 @@ server_protocols = [
+ 	[wl_protocol_dir, 'stable/xdg-shell/xdg-shell.xml'],
+ 	[wl_protocol_dir, 'unstable/xdg-shell/xdg-shell-unstable-v6.xml'],
+ 	[wl_protocol_dir, 'unstable/xdg-output/xdg-output-unstable-v1.xml'],
++	[wl_protocol_dir, 'staging/cursor-shape/cursor-shape-v1.xml'],
+ 	['wlr-layer-shell-unstable-v1.xml'],
+ 	['wlr-input-inhibitor-unstable-v1.xml'],
+ ]
+diff --git a/src/wm/wm_cursor.c b/src/wm/wm_cursor.c
+index 8974798..101042e 100644
+--- a/src/wm/wm_cursor.c
++++ b/src/wm/wm_cursor.c
+@@ -184,6 +184,7 @@ void wm_cursor_init(struct wm_cursor* cursor, struct wm_seat* seat, struct wm_la
+ 
+     cursor->wlr_cursor = wlr_cursor_create();
+     assert(cursor->wlr_cursor);
++    cursor->client_shape = NULL;
+ 
+     wlr_cursor_attach_output_layout(cursor->wlr_cursor, layout->wlr_output_layout);
+ 
+@@ -277,6 +278,8 @@ void wm_cursor_set_visible(struct wm_cursor* cursor, int visible){
+                 cursor->client_image.surface,
+                 cursor->client_image.hotspot_x,
+                 cursor->client_image.hotspot_y);
++    }else if(cursor->client_shape){
++        wm_cursor_set_image_shape(cursor, cursor->client_shape);
+     }else{
+         wm_cursor_set_image(cursor, "left_ptr");
+     }
+@@ -287,10 +290,18 @@ void wm_cursor_set_position(struct wm_cursor* cursor, int pos_x, int pos_y){
+     wm_cursor_update(cursor);
+ }
+ 
++void wm_cursor_set_image_shape(struct wm_cursor* cursor, const char* shape){
++    /* Themes may lack a name: fall back to the arrow */
++    if(!wlr_xcursor_manager_get_xcursor(cursor->wlr_xcursor_manager, shape, 1.)) shape = "left_ptr";
++    wm_cursor_set_image(cursor, shape);
++    cursor->client_shape = shape;
++}
++
+ void wm_cursor_set_image(struct wm_cursor* cursor, const char* image){
+     wl_list_remove(&cursor->surface_destroy.link);
+     wl_list_init(&cursor->surface_destroy.link);
+     cursor->client_image.surface = NULL;
++    cursor->client_shape = NULL;
+ 
+     if(!cursor->cursor_visible){
+         wlr_cursor_set_image(cursor->wlr_cursor, NULL, 0, 0, 0, 0, 0, 0);
+@@ -313,6 +324,7 @@ void wm_cursor_set_image_surface(struct wm_cursor* cursor, struct wlr_surface* s
+     wl_signal_add(&surface->events.destroy, &cursor->surface_destroy);
+ 
+     cursor->client_image.surface = surface;
++    cursor->client_shape = NULL;
+     cursor->client_image.hotspot_x = hotspot_x;
+     cursor->client_image.hotspot_y = hotspot_y;
+ 
+diff --git a/src/wm/wm_cursor_shape.c b/src/wm/wm_cursor_shape.c
+new file mode 100644
+index 0000000..08c7611
+--- /dev/null
++++ b/src/wm/wm_cursor_shape.c
+@@ -0,0 +1,127 @@
++#define _POSIX_C_SOURCE 200809L
++
++#include <stdlib.h>
++#include <wayland-server.h>
++#include <wlr/types/wlr_seat.h>
++#include <wlr/util/log.h>
++
++#include "cursor-shape-v1-protocol.h"
++
++#include "wm/wm_cursor_shape.h"
++#include "wm/wm_server.h"
++#include "wm/wm_seat.h"
++#include "wm/wm_cursor.h"
++
++/* wp_cursor_shape_device_v1.shape -> xcursor name (the CSS names, which themes alias) */
++static const char* const shape_names[] = {
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT] = "default",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CONTEXT_MENU] = "context-menu",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_HELP] = "help",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER] = "pointer",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_PROGRESS] = "progress",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_WAIT] = "wait",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CELL] = "cell",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR] = "crosshair",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT] = "text",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_VERTICAL_TEXT] = "vertical-text",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ALIAS] = "alias",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_COPY] = "copy",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_MOVE] = "move",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NO_DROP] = "no-drop",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NOT_ALLOWED] = "not-allowed",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_GRAB] = "grab",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_GRABBING] = "grabbing",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_E_RESIZE] = "e-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_N_RESIZE] = "n-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NE_RESIZE] = "ne-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NW_RESIZE] = "nw-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_S_RESIZE] = "s-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_SE_RESIZE] = "se-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_SW_RESIZE] = "sw-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_W_RESIZE] = "w-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_EW_RESIZE] = "ew-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NS_RESIZE] = "ns-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NESW_RESIZE] = "nesw-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NWSE_RESIZE] = "nwse-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_COL_RESIZE] = "col-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ROW_RESIZE] = "row-resize",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ALL_SCROLL] = "all-scroll",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ZOOM_IN] = "zoom-in",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ZOOM_OUT] = "zoom-out",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DND_ASK] = "dnd-ask",
++    [WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ALL_RESIZE] = "all-resize",
++};
++#define N_SHAPES (sizeof(shape_names) / sizeof(shape_names[0]))
++
++static void device_handle_destroy(struct wl_client* client, struct wl_resource* resource){
++    wl_resource_destroy(resource);
++}
++
++static void device_handle_set_shape(struct wl_client* client, struct wl_resource* resource, uint32_t serial, uint32_t shape){
++    /* Inert for tablet tools (no user data) */
++    struct wm_server* server = wl_resource_get_user_data(resource);
++    if(!server) return;
++
++    if(shape >= N_SHAPES || !shape_names[shape]){
++        wl_resource_post_error(resource, WP_CURSOR_SHAPE_DEVICE_V1_ERROR_INVALID_SHAPE, "unknown cursor shape %u", shape);
++        return;
++    }
++
++    /* As for wl_pointer.set_cursor: only the client under the pointer decides */
++    struct wm_seat* seat = server->wm_seat;
++    struct wlr_surface* focused_surface = seat->wlr_seat->pointer_state.focused_surface;
++    if(!focused_surface || wl_resource_get_client(focused_surface->resource) != client){
++        wlr_log(WLR_DEBUG, "Denying request to set cursor shape from unfocused client");
++        return;
++    }
++
++    wm_cursor_set_image_shape(seat->wm_cursor, shape_names[shape]);
++}
++
++static const struct wp_cursor_shape_device_v1_interface device_impl = {
++    .destroy = device_handle_destroy,
++    .set_shape = device_handle_set_shape,
++};
++
++static void create_device(struct wl_client* client, struct wl_resource* manager, uint32_t id, struct wm_server* server){
++    struct wl_resource* device = wl_resource_create(client, &wp_cursor_shape_device_v1_interface, wl_resource_get_version(manager), id);
++    if(!device){
++        wl_client_post_no_memory(client);
++        return;
++    }
++    wl_resource_set_implementation(device, &device_impl, server, NULL);
++}
++
++static void manager_handle_destroy(struct wl_client* client, struct wl_resource* resource){
++    wl_resource_destroy(resource);
++}
++
++static void manager_handle_get_pointer(struct wl_client* client, struct wl_resource* resource, uint32_t id, struct wl_resource* pointer){
++    create_device(client, resource, id, wl_resource_get_user_data(resource));
++}
++
++static void manager_handle_get_tablet_tool_v2(struct wl_client* client, struct wl_resource* resource, uint32_t id, struct wl_resource* tablet_tool){
++    create_device(client, resource, id, NULL);
++}
++
++static const struct wp_cursor_shape_manager_v1_interface manager_impl = {
++    .destroy = manager_handle_destroy,
++    .get_pointer = manager_handle_get_pointer,
++    .get_tablet_tool_v2 = manager_handle_get_tablet_tool_v2,
++};
++
++static void manager_bind(struct wl_client* client, void* data, uint32_t version, uint32_t id){
++    struct wl_resource* resource = wl_resource_create(client, &wp_cursor_shape_manager_v1_interface, version, id);
++    if(!resource){
++        wl_client_post_no_memory(client);
++        return;
++    }
++    wl_resource_set_implementation(resource, &manager_impl, data, NULL);
++}
++
++void wm_cursor_shape_create(struct wm_server* server){
++    if(!wl_global_create(server->wl_display, &wp_cursor_shape_manager_v1_interface,
++                wp_cursor_shape_manager_v1_interface.version, server, manager_bind)){
++        wlr_log(WLR_ERROR, "Could not create wp_cursor_shape_manager_v1");
++    }
++}
+diff --git a/src/wm/wm_server.c b/src/wm/wm_server.c
+index 6790739..31cb2d2 100644
+--- a/src/wm/wm_server.c
++++ b/src/wm/wm_server.c
+@@ -28,6 +28,7 @@
+ #endif
+ 
+ #include "wm/wm_server.h"
++#include "wm/wm_cursor_shape.h"
+ #include "wm/wm_util.h"
+ #include "wm/wm.h"
+ #include "wm/wm_seat.h"
+@@ -281,6 +282,7 @@ void wm_server_init(struct wm_server* server, struct wm_config* config){
+     wlr_primary_selection_v1_device_manager_create(server->wl_display);
+     wlr_gamma_control_manager_v1_create(server->wl_display);
+     wlr_viewporter_create(server->wl_display);
++    wm_cursor_shape_create(server);
+ 
+ #ifdef WM_HAS_XWAYLAND
+     server->wlr_xwayland = NULL;
+-- 
+2.56.0
+

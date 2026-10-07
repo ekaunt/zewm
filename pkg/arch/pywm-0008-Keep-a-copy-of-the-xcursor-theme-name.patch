@@ -1,0 +1,31 @@
+From 11b65922919fdd808322530e62b2c35c8889affa Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Tue, 6 Oct 2026 23:51:30 -0400
+Subject: [PATCH 08/10] Keep a copy of the xcursor theme name
+
+The caller's string (a python bytes object) does not outlive the config
+update, so the theme name could be read after it was freed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/wm/wm_config.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/wm/wm_config.c b/src/wm/wm_config.c
+index 39ff590..1cc9d3b 100644
+--- a/src/wm/wm_config.c
++++ b/src/wm/wm_config.c
+@@ -88,7 +88,9 @@ enum wm_renderer_mode wm_config_get_renderer_mode(struct wm_config* config){
+ }
+ 
+ void wm_config_set_xcursor_theme(struct wm_config* config, const char* xcursor_theme){
+-    config->xcursor_theme = xcursor_theme;
++    /* Keep a copy: the caller's string (a python bytes object) does not outlive the config update.
++     * The previous value may be a literal, so it is not freed. */
++    config->xcursor_theme = xcursor_theme ? strdup(xcursor_theme) : "";
+     xcursor_setenv(config);
+ }
+ 
+-- 
+2.56.0
+

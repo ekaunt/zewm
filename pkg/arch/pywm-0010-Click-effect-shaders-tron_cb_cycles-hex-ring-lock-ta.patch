@@ -1,0 +1,646 @@
+From b886d82db7c3b12a968ab708c791b27bbce9fc35 Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Tue, 6 Oct 2026 23:51:30 -0400
+Subject: [PATCH 10/10] Click effect shaders: tron_cb_cycles, hex, ring, lock,
+ tap
+
+Drawn at the pointer for a moment after a button press. tron_cb_cycles
+(the default in zewm): four light cycles shoot out the way the arrow
+cursor points, fanned 30 degrees apart. tron_cb_hex: a 4-digit hex code
+types out and drops out. tron_cb_ring: a shockwave ring. tron_cb_lock:
+corner brackets snap onto the pointer. tron_cb_tap: light cycles leave
+the nearest background grid intersection.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/wm/shaders/meson.build                    |   7 +-
+ .../primitive/tron_cb_cycles/fragment.glsl    |  77 +++++++++++
+ .../primitive/tron_cb_cycles/vertex.glsl      |  10 ++
+ .../primitive/tron_cb_hex/fragment.glsl       | 120 ++++++++++++++++++
+ .../shaders/primitive/tron_cb_hex/vertex.glsl |  10 ++
+ .../primitive/tron_cb_lock/fragment.glsl      | 117 +++++++++++++++++
+ .../primitive/tron_cb_lock/vertex.glsl        |  10 ++
+ .../primitive/tron_cb_ring/fragment.glsl      |  56 ++++++++
+ .../primitive/tron_cb_ring/vertex.glsl        |  10 ++
+ .../primitive/tron_cb_tap/fragment.glsl       | 107 ++++++++++++++++
+ .../shaders/primitive/tron_cb_tap/vertex.glsl |  10 ++
+ 11 files changed, 533 insertions(+), 1 deletion(-)
+ create mode 100644 src/wm/shaders/primitive/tron_cb_cycles/fragment.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_cycles/vertex.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_hex/fragment.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_hex/vertex.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_lock/fragment.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_lock/vertex.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_ring/fragment.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_ring/vertex.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_tap/fragment.glsl
+ create mode 100644 src/wm/shaders/primitive/tron_cb_tap/vertex.glsl
+
+diff --git a/src/wm/shaders/meson.build b/src/wm/shaders/meson.build
+index 2bb214d..6a99133 100644
+--- a/src/wm/shaders/meson.build
++++ b/src/wm/shaders/meson.build
+@@ -18,7 +18,12 @@ primitive_shaders = [
+   'tron_grid',
+   'tron_cb_grid',
+   'tron_cb_border',
+-  'tron_cb_cycle'
++  'tron_cb_cycle',
++  'tron_cb_tap',
++  'tron_cb_lock',
++  'tron_cb_ring',
++  'tron_cb_hex',
++  'tron_cb_cycles'
+ ]
+ 
+ quad_shader_files = [
+diff --git a/src/wm/shaders/primitive/tron_cb_cycles/fragment.glsl b/src/wm/shaders/primitive/tron_cb_cycles/fragment.glsl
+new file mode 100644
+index 0000000..3627305
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_cycles/fragment.glsl
+@@ -0,0 +1,77 @@
++precision highp float;
++/*
++ * Click light cycles, drawn for 0.2 s after a button press: four light
++ * cycles shoot out from the pointer the way the arrow cursor points, fanned 30 degrees
++ * apart around its axis. Each is a short hot-white head dragging a
++ * straight light trail that fades toward its tail, like the cycles riding
++ * the tron_cb_grid background.
++ *
++ * 0    time of the press (same clock as time)
++ * 1    output scale (px per logical px)
++ * 2-4  colour (r, g, b)
++ */
++uniform float params_float[5];
++uniform float alpha;
++uniform float time;
++varying vec2 v_texcoord;
++
++uniform float width;
++uniform float height;
++
++const float T = 0.2;
++const float FLY = 0.16;              /* time for a head to reach D1 */
++const float D0 = 2.0;                /* start distance from the hotspot (logical px) */
++const float D1 = 36.0;               /* end distance of the head */
++const float TAIL = 22.0;             /* trail length behind the head */
++const float BIKE = 6.0;              /* length of the hot head */
++const float BASE = 4.29001;          /* axis of the Bibata arrow cursor, tip-first (245.8 degrees, y down) */
++const float SPREAD = 0.52360;        /* 30 degrees between cycles */
++const vec3 HOT = vec3(0.878, 0.984, 1.0);
++
++float seg(vec2 p, vec2 a, vec2 b){
++    vec2 ab = b - a;
++    float t = clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0);
++    return length(p - (a + ab * t));
++}
++
++void main() {
++    float sc = max(params_float[1], 0.1);
++    float age = mod(time - params_float[0] + 3600.0, 3600.0);
++    if(age > T) discard;
++
++    vec2 p = (v_texcoord - 0.5) * vec2(width, height) / sc;
++    vec3 cb = vec3(params_float[2], params_float[3], params_float[4]);
++
++    float u = clamp(age / FLY, 0.0, 1.0);
++    float hd = mix(D0, D1, 1.0 - pow(1.0 - u, 2.0));
++    /* the trail keeps fading after the heads stop */
++    float bright = 1.0 - smoothstep(0.45, 1.0, age / T);
++
++    vec3 col = vec3(0.0);
++    float al = 0.0;
++    for(int i = 0; i < 4; i++){
++        float ang = BASE + (float(i) - 1.5) * SPREAD;
++        vec2 dir = vec2(cos(ang), sin(ang));
++        vec2 n = vec2(-dir.y, dir.x);
++        float along = dot(p, dir);
++        float perp = abs(dot(p, n));
++
++        /* light trail: from the tail (or the start) up to the head, brighter toward the head */
++        float t0 = max(D0, hd - TAIL);
++        float ramp = clamp((along - t0) / max(hd - t0, 1.0), 0.0, 1.0);
++        float inside = step(t0, along) * step(along, hd);
++        float tr = ramp * ramp * inside * bright;
++        float core = tr * (1.0 - smoothstep(0.5, 1.2, perp));
++        float glow = tr * exp(-perp / 2.2) * 0.45;
++
++        /* the cycle: a short hot bar at the head */
++        float hdist = seg(p, dir * (hd - BIKE), dir * hd);
++        float head = (1.0 - smoothstep(0.7, 1.5, hdist)) * bright;
++        float hglow = exp(-hdist / 3.0) * 0.6 * bright;
++
++        col += cb * (core * 0.8 + glow + hglow) + HOT * (core * 0.25 + head);
++        al += core + glow + head + hglow;
++    }
++
++    gl_FragColor = vec4(min(col, vec3(1.0)), clamp(al, 0.0, 1.0)) * alpha;
++}
+diff --git a/src/wm/shaders/primitive/tron_cb_cycles/vertex.glsl b/src/wm/shaders/primitive/tron_cb_cycles/vertex.glsl
+new file mode 100644
+index 0000000..402494b
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_cycles/vertex.glsl
+@@ -0,0 +1,10 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++	gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++	v_texcoord = texcoord;
++}
++
+diff --git a/src/wm/shaders/primitive/tron_cb_hex/fragment.glsl b/src/wm/shaders/primitive/tron_cb_hex/fragment.glsl
+new file mode 100644
+index 0000000..c362da7
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_hex/fragment.glsl
+@@ -0,0 +1,120 @@
++precision highp float;
++/*
++ * Click hex readout, drawn for 0.35 s after a button press: a 4-digit hex
++ * code (hashed from the press time) types out in a 5x7 dot-matrix font
++ * just above and right of the pointer, holds a beat, then drops out: the
++ * dots fall and blink out at random. A new press overwrites it in place.
++ *
++ * 0    time of the press (same clock as time); also the code and the dropout seed
++ * 1    output scale (px per logical px)
++ * 2-4  text colour (r, g, b)
++ */
++uniform float params_float[5];
++uniform float alpha;
++uniform float time;
++varying vec2 v_texcoord;
++
++uniform float width;
++uniform float height;
++
++const float T = 0.35;
++const float T_TYPE = 0.042;          /* per character */
++const float T_DROP = 0.24;           /* dropout starts */
++const float DOT = 2.0;               /* logical px per font dot */
++const float ADV = 6.0;               /* dots per character advance */
++const vec2 ORIGIN = vec2(14.0, -30.0); /* top-left of the text, from the pointer */
++const vec3 HOT = vec3(0.878, 0.984, 1.0);
++
++float hash1(float n){ return fract(sin(n * 127.1) * 43758.5453); }
++
++/* 5x7 glyph of hex digit d: rows 0-3 in x (5 bits each, row 0 highest), rows 4-6 in y */
++vec2 glyph(float d){
++    vec2 g = vec2(0.0);
++    if(d < 0.5) g = vec2(476789.0, 26158.0);
++    else if(d < 1.5) g = vec2(143492.0, 4238.0);
++    else if(d < 2.5) g = vec2(476194.0, 4383.0);
++    else if(d < 3.5) g = vec2(1017986.0, 1582.0);
++    else if(d < 4.5) g = vec2(72018.0, 31810.0);
++    else if(d < 5.5) g = vec2(1033153.0, 1582.0);
++    else if(d < 6.5) g = vec2(205342.0, 17966.0);
++    else if(d < 7.5) g = vec2(1016900.0, 8456.0);
++    else if(d < 8.5) g = vec2(476718.0, 17966.0);
++    else if(d < 9.5) g = vec2(476719.0, 1100.0);
++    else if(d < 10.5) g = vec2(476735.0, 17969.0);
++    else if(d < 11.5) g = vec2(1001022.0, 17982.0);
++    else if(d < 12.5) g = vec2(476688.0, 16942.0);
++    else if(d < 13.5) g = vec2(936497.0, 18012.0);
++    else if(d < 14.5) g = vec2(1032734.0, 16927.0);
++    else if(d < 15.5) g = vec2(1032734.0, 16912.0);
++    return g;
++}
++
++/* 1 when dot (cx, cy) of the 4-character string is lit */
++float lit(vec2 c, float code, float shown){
++    float ch = floor(c.x / ADV);
++    float gx = c.x - ch * ADV;
++    if(ch < 0.0 || ch > 3.0 || ch >= shown || gx > 4.0 || c.y < 0.0 || c.y > 6.0) return 0.0;
++    float d = mod(floor(code / pow(16.0, 3.0 - ch)), 16.0);
++    vec2 g = glyph(d);
++    float bits = c.y < 4.0 ? g.x : g.y;
++    float k = c.y < 4.0 ? 3.0 - c.y : 6.0 - c.y;
++    float row = mod(floor(bits / pow(32.0, k)), 32.0);
++    return mod(floor(row / pow(2.0, 4.0 - gx)), 2.0);
++}
++
++void main() {
++    float sc = max(params_float[1], 0.1);
++    float age = mod(time - params_float[0] + 3600.0, 3600.0);
++    if(age > T) discard;
++
++    vec2 p = (v_texcoord - 0.5) * vec2(width, height) / sc;
++    vec3 cb = vec3(params_float[2], params_float[3], params_float[4]);
++    float seed = floor(params_float[0] * 97.0);
++    float code = floor(hash1(seed + 0.71) * 65536.0);
++
++    /* characters typed so far */
++    float shown = min(floor(age / T_TYPE) + 1.0, 4.0);
++    float drop = clamp((age - T_DROP) / (T - T_DROP), 0.0, 1.0);
++
++    /* dropout: every column of dots falls with its own delay and speed */
++    vec2 q = (p - ORIGIN) / DOT;
++    float colx = floor(q.x);
++    float hc = hash1(seed + colx * 1.913);
++    float fall = max(drop - 0.35 * hc, 0.0);
++    q.y -= fall * fall * (14.0 + 10.0 * hc);
++
++    vec2 cell = floor(q);
++    vec2 f = q - cell - 0.5;
++
++    float col = 0.0;
++    float glow = 0.0;
++    for(int j = -1; j <= 1; j++){
++        for(int i = -1; i <= 1; i++){
++            vec2 c = cell + vec2(float(i), float(j));
++            float on = lit(c, code, shown);
++            if(on < 0.5) continue;
++            /* each dot blinks out at its own moment during the drop */
++            float alive = step(drop, 0.15 + 0.85 * hash1(seed + c.x * 3.17 + c.y * 7.31));
++            vec2 dd = (f - vec2(float(i), float(j))) * DOT;
++            float r = max(abs(dd.x), abs(dd.y));
++            if(i == 0 && j == 0) col = max(col, alive * (1.0 - smoothstep(0.75, 1.05, r)));
++            glow += alive * exp(-length(dd) / 1.8) * 0.16;
++        }
++    }
++
++    /* a character flashes hot white as it is typed */
++    float ch = floor(q.x / ADV);
++    float since = age - ch * T_TYPE;
++    float flash = 1.0 - smoothstep(0.0, 0.06, since);
++
++    /* block cursor at the next slot while typing */
++    float cur = 0.0;
++    if(age < 5.0 * T_TYPE){
++        vec2 cp = q - vec2(shown * ADV, 0.0);
++        cur = step(0.0, cp.x) * step(cp.x, 5.0) * step(0.0, cp.y) * step(cp.y, 7.0) * 0.55;
++    }
++
++    vec3 c3 = mix(cb, HOT, 0.25 + 0.75 * flash) * col + cb * (glow + cur);
++    float a = col + glow + cur;
++    gl_FragColor = vec4(min(c3, vec3(1.0)), clamp(a, 0.0, 1.0)) * alpha;
++}
+diff --git a/src/wm/shaders/primitive/tron_cb_hex/vertex.glsl b/src/wm/shaders/primitive/tron_cb_hex/vertex.glsl
+new file mode 100644
+index 0000000..402494b
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_hex/vertex.glsl
+@@ -0,0 +1,10 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++	gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++	v_texcoord = texcoord;
++}
++
+diff --git a/src/wm/shaders/primitive/tron_cb_lock/fragment.glsl b/src/wm/shaders/primitive/tron_cb_lock/fragment.glsl
+new file mode 100644
+index 0000000..84445f2
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_lock/fragment.glsl
+@@ -0,0 +1,117 @@
++precision highp float;
++/*
++ * Click target lock, drawn for half a second after a button press: four
++ * corner brackets snap in from outside onto the pointer (eased, with a
++ * small overshoot), flicker on like callbetter.com's tbflick, hold a beat
++ * and derez into scanline slices that drift outward. A hot spark marks
++ * the press itself.
++ *
++ * 0    time of the press (same clock as time); also seeds the derez
++ * 1    output scale (px per logical px)
++ * 2-4  bracket colour (r, g, b)
++ */
++uniform float params_float[5];
++uniform float alpha;
++uniform float time;
++varying vec2 v_texcoord;
++
++uniform float width;
++uniform float height;
++
++const float T = 0.5;        /* total */
++const float T_IN = 0.13;    /* fly-in */
++const float T_HOLD = 0.36;  /* derez begins */
++const float H0 = 64.0;      /* half-size at the start (logical px) */
++const float H1 = 15.0;      /* half-size once locked */
++const vec3 HOT = vec3(0.878, 0.984, 1.0);
++
++float hash1(float n){ return fract(sin(n * 127.1) * 43758.5453); }
++
++/* tbflick keyframes, started at the first full-on frame:
++   1, 12% .15, 18% 1, 24% .4, 30% 1, 42% .75, 50% 1 */
++float flick(float x){
++    if(x < 0.0) return 1.0;
++    if(x < 0.03) return mix(1.0, 0.15, x / 0.03);
++    if(x < 0.09) return mix(0.15, 1.0, (x - 0.03) / 0.06);
++    if(x < 0.15) return mix(1.0, 0.4, (x - 0.09) / 0.06);
++    if(x < 0.21) return mix(0.4, 1.0, (x - 0.15) / 0.06);
++    if(x < 0.33) return mix(1.0, 0.75, (x - 0.21) / 0.12);
++    if(x < 0.41) return mix(0.75, 1.0, (x - 0.33) / 0.08);
++    return 1.0;
++}
++
++/* easeOutBack: lands with a small overshoot */
++float ease(float u){
++    float c1 = 1.70158;
++    float c3 = c1 + 1.0;
++    float v = u - 1.0;
++    return 1.0 + c3 * v * v * v + c1 * v * v;
++}
++
++/* Four corner brackets of half-size h (ap = abs(p)), arms of length arm,
++   lines of half-thickness th */
++float bracket(vec2 ap, float h, float arm, float th){
++    float bh = step(h - arm, ap.x) * step(ap.x, h + th) * (1.0 - smoothstep(th - 0.5, th + 0.5, abs(ap.y - h)));
++    float bv = step(h - arm, ap.y) * step(ap.y, h + th) * (1.0 - smoothstep(th - 0.5, th + 0.5, abs(ap.x - h)));
++    return max(bh, bv);
++}
++
++void main() {
++    float sc = max(params_float[1], 0.1);
++    float age = mod(time - params_float[0] + 3600.0, 3600.0);
++    if(age > T) discard;
++
++    vec2 p = (v_texcoord - 0.5) * vec2(width, height) / sc;
++    vec3 cb = vec3(params_float[2], params_float[3], params_float[4]);
++    float seed = floor(params_float[0] * 97.0);
++
++    /* fly-in */
++    float u = clamp(age / T_IN, 0.0, 1.0);
++    float h = mix(H0, H1, ease(u));
++    float arm = max(0.45 * h, 6.5);
++    float th = 0.6;
++
++    /* derez: slices drift out, jitter sideways and drop out row by row */
++    float d = clamp((age - T_HOLD) / (T - T_HOLD), 0.0, 1.0);
++    float row = floor(p.y / 2.0);
++    float rh = hash1(seed + row * 0.731);
++    vec2 pj = p;
++    pj.x += (rh - 0.5) * 14.0 * d;
++    h += 9.0 * d;
++    float keep = step(d * 1.15, hash1(seed + row * 1.37 + 0.5));
++    vec2 ap = abs(pj);
++
++    float a_lock = age < T_IN ? 0.85 : flick((age - T_IN) / 0.22);
++    a_lock *= (1.0 - d) * keep;
++
++    float line = bracket(ap, h, arm, th);
++    float glow = bracket(ap, h, arm + 1.5, 2.8) * 0.22;
++    float core = line * a_lock;
++    float gl = glow * a_lock;
++
++    /* motion trail while flying in: ghosts at the last few positions */
++    if(age < T_IN){
++        for(int i = 1; i <= 3; i++){
++            float ua = clamp((age - 0.012 * float(i)) / T_IN, 0.0, 1.0);
++            float hg = mix(H0, H1, ease(ua));
++            gl += bracket(ap, hg, max(0.45 * hg, 6.5), 1.2) * 0.3 / float(i + 1);
++        }
++    }
++
++    vec3 col = cb * (core + gl) + HOT * core * 0.35;
++    float a = core + gl;
++
++    /* centre dot while locked */
++    float r = length(p);
++    float dot_ = (1.0 - smoothstep(0.8, 1.7, r)) * (age < T_IN ? 0.0 : a_lock) * 0.8;
++    col += HOT * dot_;
++    a += dot_;
++
++    /* the press itself: a hot spark that settles fast */
++    float spark = (1.0 - smoothstep(1.5, 3.2, r)) * (1.0 - smoothstep(0.0, 0.18, age));
++    float spark_glow = exp(-r / 9.0) * 0.45 * (1.0 - smoothstep(0.0, 0.3, age));
++    col += HOT * spark + cb * spark_glow;
++    a += spark + spark_glow;
++
++    gl_FragColor = vec4(min(col, vec3(1.0)), clamp(a, 0.0, 1.0)) * alpha;
++}
+diff --git a/src/wm/shaders/primitive/tron_cb_lock/vertex.glsl b/src/wm/shaders/primitive/tron_cb_lock/vertex.glsl
+new file mode 100644
+index 0000000..402494b
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_lock/vertex.glsl
+@@ -0,0 +1,10 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++	gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++	v_texcoord = texcoord;
++}
++
+diff --git a/src/wm/shaders/primitive/tron_cb_ring/fragment.glsl b/src/wm/shaders/primitive/tron_cb_ring/fragment.glsl
+new file mode 100644
+index 0000000..d000494
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_ring/fragment.glsl
+@@ -0,0 +1,56 @@
++precision highp float;
++/*
++ * Click shockwave, drawn for 0.35 s after a button press: a thin hot-white
++ * ring with a coloured glow expands from the pointer and fades, like the
++ * tap ring of callbetter.com's demo cursor (curtap), with a soft fill
++ * trailing behind the front. A hot spark marks the press itself.
++ *
++ * 0    time of the press (same clock as time)
++ * 1    output scale (px per logical px)
++ * 2-4  ring colour (r, g, b)
++ */
++uniform float params_float[5];
++uniform float alpha;
++uniform float time;
++varying vec2 v_texcoord;
++
++uniform float width;
++uniform float height;
++
++const float T = 0.35;
++const float R0 = 4.0;       /* radius at the press (logical px) */
++const float R1 = 46.0;      /* radius at the end */
++const vec3 HOT = vec3(0.878, 0.984, 1.0);
++
++void main() {
++    float sc = max(params_float[1], 0.1);
++    float age = mod(time - params_float[0] + 3600.0, 3600.0);
++    if(age > T) discard;
++
++    vec2 p = (v_texcoord - 0.5) * vec2(width, height) / sc;
++    vec3 cb = vec3(params_float[2], params_float[3], params_float[4]);
++    float r = length(p);
++
++    float u = clamp(age / T, 0.0, 1.0);
++    float e = 1.0 - pow(1.0 - u, 3.0);           /* ease-out */
++    float rr = mix(R0, R1, e);
++    float fade = 1.0 - smoothstep(0.35, 1.0, u);  /* opacity .9 -> 0 */
++
++    float d = r - rr;
++    float ad = abs(d);
++    /* 1px hot core, coloured glow either side, fill trailing inside the front */
++    float core = (1.0 - smoothstep(0.5, 1.3, ad)) * fade;
++    float glow = exp(-ad / 3.5) * 0.55 * fade;
++    float trail = exp(max(-d, 0.0) / -10.0) * step(d, 0.0) * 0.18 * fade * (1.0 - e * 0.6);
++
++    vec3 col = HOT * core + cb * (glow + trail);
++    float a = core + glow + trail;
++
++    /* the press itself: a hot spark that settles fast */
++    float spark = (1.0 - smoothstep(1.5, 3.2, r)) * (1.0 - smoothstep(0.0, 0.15, age));
++    float spark_glow = exp(-r / 8.0) * 0.5 * (1.0 - smoothstep(0.0, 0.25, age));
++    col += HOT * spark + cb * spark_glow;
++    a += spark + spark_glow;
++
++    gl_FragColor = vec4(min(col, vec3(1.0)), clamp(a, 0.0, 1.0)) * alpha;
++}
+diff --git a/src/wm/shaders/primitive/tron_cb_ring/vertex.glsl b/src/wm/shaders/primitive/tron_cb_ring/vertex.glsl
+new file mode 100644
+index 0000000..402494b
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_ring/vertex.glsl
+@@ -0,0 +1,10 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++	gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++	v_texcoord = texcoord;
++}
++
+diff --git a/src/wm/shaders/primitive/tron_cb_tap/fragment.glsl b/src/wm/shaders/primitive/tron_cb_tap/fragment.glsl
+new file mode 100644
+index 0000000..7b55b73
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_tap/fragment.glsl
+@@ -0,0 +1,107 @@
++precision highp float;
++/*
++ * Click burst, drawn for 1 s after a button press: four light cycles leave
++ * the grid intersection nearest the pointer along the background grid
++ * lines, cyan and orange alternating, turning 90 degrees at crossings now
++ * and then, exactly like the cycles of tron_cb_grid.
++ *
++ * 0    time of the press (same clock as time); also seeds turns and speeds
++ * 1    output scale (px per logical px)
++ * 2-3  widget origin in output logical px
++ * 4-5  grid shift (tron_cb_grid params 1-2)
++ * 6    grid zoom (tron_cb_grid param 6)
++ * 7-8  output size in logical px
++ */
++uniform float params_float[9];
++uniform float alpha;
++uniform float time;
++varying vec2 v_texcoord;
++
++uniform float width;
++uniform float height;
++
++const float T = 1.0;
++const float CELL = 48.0;
++const vec3 OR = vec3(0.976, 0.451, 0.086);
++const vec3 CY = vec3(0.133, 0.827, 0.933);
++const vec3 HOT = vec3(0.878, 0.984, 1.0);
++
++float hash1(float n){ return fract(sin(n * 127.1) * 43758.5453); }
++
++vec2 seg(vec2 p, vec2 a, vec2 b){
++    vec2 ab = b - a;
++    float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-4), 0.0, 1.0);
++    return vec2(length(p - (a + ab * t)), t);
++}
++
++void main() {
++    float sc = max(params_float[1], 0.1);
++    float age = mod(time - params_float[0] + 3600.0, 3600.0);
++    if(age > T) discard;
++
++    /* Same grid space as tron_cb_grid: output logical px, zoomed about the
++       output centre, then shifted */
++    vec2 S = vec2(params_float[7], params_float[8]);
++    vec2 C = 0.5 * S;
++    float zg = max(params_float[6], 0.05);
++    vec2 shift = vec2(params_float[4], params_float[5]);
++    vec2 origin = vec2(params_float[2], params_float[3]);
++    vec2 q = origin + v_texcoord * vec2(width, height) / sc;
++    vec2 g = (q - C) / zg + C + shift;
++    vec2 qc = origin + 0.5 * vec2(width, height) / sc;
++    vec2 gc = (qc - C) / zg + C + shift;
++    float x0 = mod(S.x * 0.5, CELL) + 0.5;
++    /* nearest grid intersection to the press */
++    vec2 start = vec2(x0 + CELL * floor((gc.x - x0) / CELL + 0.5), 0.5 + CELL * floor((gc.y - 0.5) / CELL + 0.5));
++
++    float seed = floor(params_float[0] * 97.0);
++    float fade = 1.0 - smoothstep(0.7, 1.0, age / T);
++    vec3 col = vec3(0.0);
++    float a = 0.0;
++    for(int i = 0; i < 4; i++){
++        float fi = float(i);
++        vec2 d = i == 0 ? vec2(1.0, 0.0) : (i == 1 ? vec2(0.0, 1.0) : (i == 2 ? vec2(-1.0, 0.0) : vec2(0.0, -1.0)));
++        float spd = (150.0 + 140.0 * hash1(seed + fi * 3.19 + 0.37)) / zg;
++        float dist = min(spd * age, 260.0 / zg);
++        float tail = spd * 0.8;
++        vec2 pos = start;
++        float travelled = 0.0;
++        float glow = 0.0;
++        float core = 0.0;
++        for(int k = 0; k < 8; k++){
++            float fk = float(k);
++            /* crossings before a turn: each crossing turns with p = 0.3, like the site */
++            float u = max(hash1(seed + fi * 8.9 + fk * 1.31 + 0.97), 1e-4);
++            float n = 1.0 + floor(log(u) / log(0.7));
++            float l = min(n * CELL, dist - travelled);
++            if(l <= 0.0) break;
++            vec2 b = pos + d * l;
++            vec2 s = seg(g, pos, b);
++            float along = travelled + s.y * l;
++            float pa = (dist - along) / tail;
++            float al = (1.0 - pa) * step(pa, 1.0) * fade;
++            float dx = s.x * zg;
++            glow = max(glow, al * 0.22 * (1.0 - smoothstep(2.0, 3.0, dx)));
++            core = max(core, al * 0.9 * (1.0 - smoothstep(0.5, 1.25, dx)));
++            travelled += l;
++            pos = b;
++            float tr = hash1(seed + fi * 9.7 + fk * 2.3 + 0.13);
++            d = vec2(-d.y, d.x) * (tr < 0.5 ? 1.0 : -1.0);
++        }
++        float hd = length(g - pos) * zg;
++        float hg = 0.3 * fade * (1.0 - smoothstep(6.5, 7.5, hd));
++        float hc = 0.95 * fade * (1.0 - smoothstep(1.7, 2.7, hd));
++        vec3 c = mod(fi, 2.0) < 0.5 ? CY : OR;
++        col += c * (glow + core + hg) + HOT * hc;
++        a += glow + core + hg + hc;
++    }
++
++    /* the intersection lights up at the press and settles */
++    float r0 = length(g - start) * zg;
++    float spark = (1.0 - smoothstep(2.0, 4.0, r0)) * (1.0 - smoothstep(0.0, 0.25, age));
++    float spark_glow = exp(-r0 / 8.0) * 0.5 * (1.0 - smoothstep(0.0, 0.4, age));
++    col += HOT * spark + CY * spark_glow;
++    a += spark + spark_glow;
++
++    gl_FragColor = vec4(min(col, vec3(1.0)), clamp(a, 0.0, 1.0)) * alpha;
++}
+diff --git a/src/wm/shaders/primitive/tron_cb_tap/vertex.glsl b/src/wm/shaders/primitive/tron_cb_tap/vertex.glsl
+new file mode 100644
+index 0000000..402494b
+--- /dev/null
++++ b/src/wm/shaders/primitive/tron_cb_tap/vertex.glsl
+@@ -0,0 +1,10 @@
++uniform mat3 proj;
++attribute vec2 pos;
++attribute vec2 texcoord;
++varying vec2 v_texcoord;
++
++void main() {
++	gl_Position = vec4(proj * vec3(pos, 1.0), 1.0);
++	v_texcoord = texcoord;
++}
++
+-- 
+2.56.0
+
