@@ -70,6 +70,10 @@ conf_blend_t = configured_value("blend_time", 1.0)
 
 conf_idle_times = configured_value("energy.idle_times", [120, 300, 600])
 conf_suspend_command = configured_value("energy.suspend_command", "systemctl suspend")
+# Started inside another graphical session (nested test instance): never
+# suspend the machine from here, whatever the config says. A nested instance
+# idles forever, so it would suspend the real laptop again on every wake.
+_NESTED = bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
 
 """
 code == 'lock': Called on lock - idea is to dim the screen now
@@ -1057,7 +1061,10 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             conf_idle_callback()("active")
         elif len(conf_idle_times()) > 2 and elapsed > conf_idle_times()[2]:
             conf_idle_callback()("idle-suspend")
-            os.system(conf_suspend_command())
+            if _NESTED:
+                logger.warning("Nested instance: not running the suspend command")
+            else:
+                os.system(conf_suspend_command())
         elif len(conf_idle_times()) > 2 and elapsed > conf_idle_times()[2] - 5.0:
             conf_idle_callback()("idle-presuspend")
         elif len(conf_idle_times()) > 1 and elapsed > conf_idle_times()[1]:
