@@ -31,7 +31,8 @@ from .dbus import DBusEndpoint, DBusGestureProvider
 from .panel_launcher import PanelsLauncher
 from .auth_backend import AuthBackend
 
-from .widget import TopBar, BottomBar, Background, TronBackground, Corner, FocusBorders, PreselectBorder
+from .widget import TopBar, BottomBar, Background, TronBackground, Corner, FocusBorders, PreselectBorder, ClickBurst
+from .widget.click_burst import conf_enabled as conf_click_burst
 from .overlay import (
     Overlay,
     MoveResizeOverlay,
@@ -377,6 +378,7 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         self.bottom_bars: list[BottomBar] = []
         self.corners: list[list[Corner]] = []
         self.focus_borders: FocusBorders = FocusBorders(self)
+        self.click_bursts: list[ClickBurst] = []
 
         self.thread = LayoutThread(self)
 
@@ -516,6 +518,10 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             self.create_widget(TronBackground if (conf_background_shader() or '').startswith('tron_') else Background, o, get_workspace_for_output(o))
             for o in self.layout
         ]
+
+        for cb in self.click_bursts:
+            cb.destroy()
+        self.click_bursts = [self.create_widget(ClickBurst, o) for o in self.layout] if conf_click_burst() else []
 
         for o in self.layout:
             self.corners += [
@@ -878,6 +884,9 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
 
     def on_button(self, time_msec: int, button: int, state: int) -> bool:
         self._pointer_input_at = time.time()
+        if state == PYWM_PRESSED:
+            for cb in self.click_bursts:
+                cb.burst(*self.cursor_pos, button)
         if self.is_locked():
             return False
 

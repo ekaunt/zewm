@@ -404,6 +404,13 @@ class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
         self._lean_t = t
         return self._lean
 
+    def cb_grid_params(self) -> tuple[float, float, float]:
+        """(shift x, shift y, zoom) of the tron_cb_grid as last drawn, for widgets that ride the grid"""
+        p = self._last_params
+        if (conf_background_shader() or '') == 'tron_cb_grid' and p is not None and len(p) >= 7:
+            return p[1], p[2], p[6]
+        return 0., 0., 1.
+
     def _result(self, opacity: float) -> PyWMWidgetDownstreamState:
         result = PyWMWidgetDownstreamState()
         result.z_index = -10000
