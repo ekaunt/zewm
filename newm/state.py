@@ -319,8 +319,14 @@ class WorkspaceState:
                 self.bottom_bar_dy = 1. if self.is_in_overview() else 0.
 
 
-    def constrain(self) -> None:
+    def constrain(self, preselect: Optional[tuple[int, int, int]] = None) -> None:
         min_i, min_j, max_i, max_j = self.get_extent()
+        if preselect is not None and preselect[0] == self._ws._handle:
+            # a preselected tile outside the windows counts as content: the viewport may pan to it
+            _, pi, pj = preselect
+            if min_i == max_i == min_j == max_j == 0 and not self._view_states:
+                min_i, min_j, max_i, max_j = pi, pj, pi, pj
+            min_i, min_j, max_i, max_j = min(min_i, pi), min(min_j, pj), max(max_i, pi), max(max_j, pj)
         min_i = math.floor(min_i)
         min_j = math.floor(min_j)
         max_i = math.ceil(max_i)
@@ -701,8 +707,9 @@ class LayoutState:
             s.validate_stack_indices()
 
     def constrain(self) -> LayoutState:
+        preselect = getattr(self._wm, "preselect", None)
         for h, s in self._workspace_states.items():
-            s.constrain()
+            s.constrain(preselect)
         return self
 
     def clean(self, view_handles: list[int]) -> LayoutState:

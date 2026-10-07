@@ -5,9 +5,12 @@ import math
 from pywm import PYWM_PRESSED
 
 from .overlay import Overlay
+from ..config import configured_value
 
 if TYPE_CHECKING:
     from ..layout import Layout
+
+conf_anim_t = configured_value('anim_time', .3)
 
 MOVES = {
     'h': (-1, 0), 'Left': (-1, 0),
@@ -46,7 +49,9 @@ class PreselectOverlay(Overlay):
         vi = min(max(ws_state.i, i - size + 1), i)
         vj = min(max(ws_state.j, j - size + 1), j)
         if (vi, vj) != (ws_state.i, ws_state.j):
-            self.layout.update(self.layout.state.replacing_workspace_state(self.workspace, i=vi, j=vj))
+            # animate the pan like any other viewport move (overlay_safe: we are inside the overlay)
+            new_state = self.layout.state.replacing_workspace_state(self.workspace, i=vi, j=vj)
+            self.layout.animate_to(lambda _: (None, new_state), conf_anim_t(), overlay_safe=True)
         else:
             self.layout.damage()
 
