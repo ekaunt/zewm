@@ -358,6 +358,10 @@ class TronBackground(Animate[TronGridState], PyWMWidget, Animatable):
         s = self._output.scale
         shader = conf_background_shader() or 'tron_grid'
         if shader == 'tron_cb_grid':
+            # The grid is not redrawn every frame by the compositor: keep the
+            # frames coming ourselves while the build-in plays (1.5 s)
+            if (time.monotonic() % 3600. - self._build_start) % 3600. < 1.7:
+                self.damage()
             lx, ly = self._step_lean(t)
             # callbetter.com: grid scrolls at 0.35x of the pan, like the site on scroll
             gx = cx * self._output.width * 0.35 + lx
