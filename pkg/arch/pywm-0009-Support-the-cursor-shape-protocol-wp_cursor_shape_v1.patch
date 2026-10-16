@@ -1,7 +1,7 @@
 From 50401a5b611aedfe6b0533e190c2fcf29468b28c Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Tue, 6 Oct 2026 23:51:30 -0400
-Subject: [PATCH 09/10] Support the cursor shape protocol (wp_cursor_shape_v1)
+Subject: [PATCH 09/11] Support the cursor shape protocol (wp_cursor_shape_v1)
 
 Clients can name a cursor shape instead of attaching a surface. The CSS
 shape names map to xcursor names; a theme without the name falls back to

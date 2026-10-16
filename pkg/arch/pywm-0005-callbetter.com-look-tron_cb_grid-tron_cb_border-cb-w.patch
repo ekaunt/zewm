@@ -1,7 +1,7 @@
 From 1ba80db215a5b3a857d715e44cb3b51c0b252fdd Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Wed, 30 Sep 2026 02:31:16 -0400
-Subject: [PATCH 5/6] callbetter.com look: tron_cb_grid, tron_cb_border, cb
+Subject: [PATCH 05/11] callbetter.com look: tron_cb_grid, tron_cb_border, cb
  wipe
 
 Port of the callbetter.com landing page (public/lp.html): starfield and
@@ -674,5 +674,5 @@ index 625d8e7..89cac20 100644
  static int fx_timer_handler(void* data){
      struct wm_view* view = data;
 -- 
-2.55.0
+2.56.0
 

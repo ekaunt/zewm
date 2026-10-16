@@ -1,7 +1,7 @@
 From da20a2955ed22c3ca8c88b0cf4f0d32ca8618023 Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Tue, 29 Sep 2026 19:14:01 -0400
-Subject: [PATCH 3/6] tron_border: smooth streaks, redraw every vblank
+Subject: [PATCH 03/11] tron_border: smooth streaks, redraw every vblank
 
 Parameterise the streak by true arc length around the rounded corners
 (no jump at corners), give the head a soft front and fade the tail out
@@ -152,5 +152,5 @@ index e776f03..708143f 100644
              }
          }
 -- 
-2.55.0
+2.56.0
 

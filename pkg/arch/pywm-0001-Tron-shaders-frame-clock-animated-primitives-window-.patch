@@ -1,7 +1,7 @@
 From b3650f7a3a1ecf6ec2f0f0da18abb0df859f4ae1 Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Tue, 29 Sep 2026 19:09:12 -0400
-Subject: [PATCH 1/6] Tron shaders: frame clock, animated primitives, window
+Subject: [PATCH 01/11] Tron shaders: frame clock, animated primitives, window
  rez-in
 
 Adds a time uniform to primitive and texture shaders and an fx_age
@@ -955,5 +955,5 @@ index d72c15c..e776f03 100644
  }
  
 -- 
-2.55.0
+2.56.0
 

@@ -1,0 +1,204 @@
+From 681feffa70551b4f30357f69ec8932d0be354485 Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Fri, 16 Oct 2026 18:24:43 -0400
+Subject: [PATCH 11/11] Static grid and border: no per-vblank redraw, no light
+ cycles
+
+tron_cb_grid and tron_cb_border were rescheduled every vblank forever, which
+forced a full-output recomposite at 60 fps and held the GPU at ~2 GHz: 15.9 W
+SoC at idle vs 4.8 W with both off (Firefox/node frozen, 30 s windows).
+Exempt both from is_animated_primitive(); their build-ins are driven by the
+Python widgets' damage() instead. Drop the grid's light cycles and fade the
+border's spinning streaks out 0.6 s after the focus trace.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../primitive/tron_cb_border/fragment.glsl    | 20 ++--
+ .../primitive/tron_cb_grid/fragment.glsl      | 95 +------------------
+ src/wm/wm_widget.c                            |  7 +-
+ 3 files changed, 19 insertions(+), 103 deletions(-)
+
+diff --git a/src/wm/shaders/primitive/tron_cb_border/fragment.glsl b/src/wm/shaders/primitive/tron_cb_border/fragment.glsl
+index 2a5d877..9722ad5 100644
+--- a/src/wm/shaders/primitive/tron_cb_border/fragment.glsl
++++ b/src/wm/shaders/primitive/tron_cb_border/fragment.glsl
+@@ -1,11 +1,11 @@
+ precision highp float;
+ /*
+  * Focus border in the style of callbetter.com panels (.cc, .cc::before):
+- * 1px cyan border, 18px corner brackets, soft outer glow, two streaks
+- * spinning slowly around it (the tron look). On focus (a new window gets
+- * focus too) it builds in: the two streaks each race half a lap and draw
+- * the border behind them, and the brackets flicker on (tbflick) as a streak
+- * passes them.
++ * 1px cyan border, 18px corner brackets, soft outer glow. On focus (a new
++ * window gets focus too) it builds in: two streaks each race half a lap and
++ * draw the border behind them, and the brackets flicker on (tbflick) as a
++ * streak passes them. The streaks then fade out and the border is static:
++ * the compositor only redraws it when its params change.
+  *
+  * 0-3   colour (r, g, b, a)
+  * 4     corner radius of the border line
+@@ -123,14 +123,16 @@ void main() {
+     /* Premultiplied from here on */
+     vec3 pm = col * a;
+ 
+-    /* Two streaks, half a lap apart, spinning slowly */
++    /* Two streaks, half a lap apart */
+     vec2 st1 = streak(mod(hb - s + 0.5 * perim, perim) - 0.5 * perim, perim);
+     vec2 st2 = streak(mod(hb - s, perim) - 0.5 * perim, perim);
+     float band = 1.2 * line + 0.6 * exp(-dist / (4.0 * sc));
+-    float s1 = (st1.x + 1.5 * st1.y) * band;
+-    float s2 = (st2.x + 1.5 * st2.y) * band;
++    /* Streaks only during the build-in; gone 0.6 s after it ends */
++    float keep = 1.0 - smoothstep(T + 0.3, T + 0.9, age);
++    float s1 = (st1.x + 1.5 * st1.y) * band * keep;
++    float s2 = (st2.x + 1.5 * st2.y) * band * keep;
+     vec3 c2 = vec3(params_float[11], params_float[12], params_float[13]);
+-    pm += cy * s1 + c2 * s2 + vec3(0.8) * line * (st1.y + st2.y);
++    pm += cy * s1 + c2 * s2 + vec3(0.8) * line * (st1.y + st2.y) * keep;
+     a = max(a, clamp(0.9 * (s1 + s2), 0.0, 1.0));
+ 
+     float A = params_float[3];
+diff --git a/src/wm/shaders/primitive/tron_cb_grid/fragment.glsl b/src/wm/shaders/primitive/tron_cb_grid/fragment.glsl
+index adae8eb..58e09fb 100644
+--- a/src/wm/shaders/primitive/tron_cb_grid/fragment.glsl
++++ b/src/wm/shaders/primitive/tron_cb_grid/fragment.glsl
+@@ -6,8 +6,8 @@ precision mediump float;
+ /*
+  * callbetter.com background (public/lp.html body::before + #tron canvas):
+  * stars and two soft glows on #04060f, a 48px cyan grid masked to an
+- * ellipse, light cycles riding the grid (one per grid block, about two on
+- * screen), and the grid growing out from the centre on start.
++ * ellipse, and the grid growing out from the centre on start. Static after
++ * the build-in: the compositor only redraws it when its params change.
+  *
+  * 0     output scale (px per logical px)
+  * 1-2   grid shift in logical px (parallax: camera pan * 0.35)
+@@ -43,85 +43,6 @@ float star(vec2 p, vec2 at, float size){
+ /* over(): paint colour c with opacity a on top of dst */
+ vec3 over(vec3 dst, vec3 c, float a){ return mix(dst, c, clamp(a, 0.0, 1.0)); }
+ 
+-/* Distance to segment ab and the position along it (0..1) */
+-vec2 seg(vec2 p, vec2 a, vec2 b){
+-    vec2 ab = b - a;
+-    float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-4), 0.0, 1.0);
+-    return vec2(length(p - (a + ab * t)), t);
+-}
+-
+-/* Block of grid cells holding one light cycle: cycles live in grid space, so they
+- * pan and zoom exactly with their lines; about two blocks fit on screen at zoom 1 */
+-const vec2 BLOCK = vec2(38.0, 24.0);
+-const float PERIOD = 5.5;
+-
+-float hash2(vec2 b, float n){ return hash1(b.x * 37.17 + b.y * 101.31 + n); }
+-
+-/*
+- * Light cycle of block b at grid point g (grid units = logical px at zoom 1).
+- * Returns (trail alpha, head halo alpha, head core alpha) and the colour.
+- */
+-vec3 cycle(vec2 g, vec2 b, vec2 org, float age, float z, out vec3 pc){
+-    float toff = hash2(b, 0.5) * PERIOD;
+-    float tt = age + toff;
+-    float k = floor(tt / PERIOD);
+-    float a = tt - k * PERIOD;
+-    float sd = k * 13.7;
+-
+-    pc = hash2(b, sd + 0.41) < 0.22 ? OR : CY;
+-    float spd = 150.0 + 140.0 * hash2(b, sd + 0.37);
+-    float fade = smoothstep(0.0, 0.4, a) * (PERIOD - a < 0.5 ? (PERIOD - a) / 0.5 : 1.0);
+-
+-    /* Block in cells, cycle stays one cell inside it */
+-    vec2 lo = org + CELL;
+-    vec2 hi = org + (BLOCK - 1.0) * CELL;
+-    vec2 ctr = 0.5 * (lo + hi);
+-    vec2 pos = org + CELL * floor(vec2(0.25 + 0.5 * hash2(b, sd + 0.67), 0.25 + 0.5 * hash2(b, sd + 0.79)) * BLOCK);
+-    float r = hash2(b, sd + 0.53);
+-    vec2 dv = r < 0.25 ? vec2(1.0, 0.0) : (r < 0.5 ? vec2(-1.0, 0.0) : (r < 0.75 ? vec2(0.0, 1.0) : vec2(0.0, -1.0)));
+-
+-    float dist = spd * a;
+-    float tail = spd * 0.8;
+-    float travelled = 0.0;
+-    float glow = 0.0;
+-    float core = 0.0;
+-    vec2 head = pos;
+-    for(int i = 0; i < 14; i++){
+-        if(travelled >= dist) break;
+-        float fi = float(i);
+-        /* crossings before a turn: each crossing turns with p = 0.3 */
+-        float u = max(hash2(b, sd + fi * 1.31 + 0.97), 1e-4);
+-        float n = min(1.0 + floor(log(u) / log(0.7)), 8.0);
+-        /* stay inside the block */
+-        float room = dv.x > 0.5 ? hi.x - pos.x : (dv.x < -0.5 ? pos.x - lo.x : (dv.y > 0.5 ? hi.y - pos.y : pos.y - lo.y));
+-        float L = max(min(n * CELL, room), 0.0);
+-        float l = min(L, dist - travelled);
+-        vec2 e = pos + dv * l;
+-        if(l > 0.0 && travelled + l > dist - tail){
+-            vec2 d = seg(g, pos, e);
+-            float along = travelled + d.y * l;
+-            float pa = (dist - along) / tail;
+-            float al = (1.0 - pa) * step(pa, 1.0);
+-            float dpx = d.x * z;
+-            glow = max(glow, al * 0.22 * (1.0 - smoothstep(2.0, 3.0, dpx)));
+-            core = max(core, al * 0.9 * (1.0 - smoothstep(0.5, 1.25, dpx)));
+-        }
+-        travelled += l;
+-        pos = e;
+-        head = e;
+-        /* turn 90 degrees, steering back toward the middle of the block */
+-        vec2 nd = vec2(-dv.y, dv.x);
+-        float toward = dot(ctr - pos, nd);
+-        float rnd = hash2(b, sd + fi * 2.3 + 0.13);
+-        float sgn = abs(toward) > 0.3 * dot(abs(nd), hi - lo) ? sign(toward) : (rnd < 0.5 ? 1.0 : -1.0);
+-        dv = nd * sgn;
+-    }
+-    float hd = length(g - head) * z;
+-    float hg = 0.3 * (1.0 - smoothstep(6.5, 7.5, hd));
+-    float hc = 0.95 * (1.0 - smoothstep(1.7, 2.7, hd));
+-    return vec3(max(glow, core), hg, hc) * fade;
+-}
+-
+ void main() {
+     float sc = max(params_float[0], 0.1);
+     /* Work in logical px, like the CSS */
+@@ -201,18 +122,6 @@ void main() {
+         canvas = CY;
+         ca = 0.11 * line;
+ 
+-        /* The light cycle of the grid block this point is in */
+-        vec2 g0 = vec2(x0, 0.5);
+-        vec2 bsz = BLOCK * CELL;
+-        vec2 bk = floor((g - g0) / bsz);
+-        vec3 pc;
+-        vec3 cy = cycle(g, bk, g0 + bk * bsz, age - BUILD, zg, pc);
+-        canvas = mix(canvas, pc, cy.x / max(ca + cy.x, 1e-4));
+-        ca = clamp(ca + cy.x, 0.0, 1.0);
+-        canvas = mix(canvas, pc, cy.y / max(ca + cy.y, 1e-4));
+-        ca = clamp(ca + cy.y, 0.0, 1.0);
+-        canvas = mix(canvas, HOT, cy.z / max(ca + cy.z, 1e-4));
+-        ca = clamp(ca + cy.z, 0.0, 1.0);
+     }
+     col = over(col, canvas, ca * mask);
+ 
+diff --git a/src/wm/wm_widget.c b/src/wm/wm_widget.c
+index 51925ca..f29d0b8 100644
+--- a/src/wm/wm_widget.c
++++ b/src/wm/wm_widget.c
+@@ -21,8 +21,13 @@ static int anim_timer_handler(void* data){
+     return 0;
+ }
+ 
++/* tron_* primitives are redrawn every frame, except the two that are on screen
++ * permanently: those animate only during their build-in, driven by the Python
++ * widget's damage(), and are static otherwise (the background forced a full
++ * output redraw every vblank, about 10 W at idle). */
+ static bool is_animated_primitive(const char* name){
+-    return name && !strncmp(name, "tron_", 5);
++    return name && !strncmp(name, "tron_", 5)
++        && strcmp(name, "tron_cb_grid") && strcmp(name, "tron_cb_border");
+ }
+ 
+ void wm_widget_init(struct wm_widget* widget, struct wm_server* server){
+-- 
+2.56.0
+

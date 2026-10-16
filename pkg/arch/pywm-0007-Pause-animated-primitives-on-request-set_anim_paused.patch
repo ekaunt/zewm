@@ -1,7 +1,7 @@
 From bbc60cb0e3e5f6ebcc1016b053768b68276be14d Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Mon, 5 Oct 2026 15:41:11 -0400
-Subject: [PATCH 7/7] Pause animated primitives on request (set_anim_paused)
+Subject: [PATCH 07/11] Pause animated primitives on request (set_anim_paused)
 
 tron_* primitives reschedule a redraw after every frame forever. That keeps
 an atomic commit waiting on GPU fences almost all the time, which shows up as

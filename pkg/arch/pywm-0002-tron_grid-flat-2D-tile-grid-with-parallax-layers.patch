@@ -1,7 +1,7 @@
 From d4eb488b21705984f773496f61d6e3663ddddd90 Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Tue, 29 Sep 2026 19:11:42 -0400
-Subject: [PATCH 2/6] tron_grid: flat 2D tile grid with parallax layers
+Subject: [PATCH 02/11] tron_grid: flat 2D tile grid with parallax layers
 
 Front layer follows the tile grid of the wall, two fainter layers drift
 slower behind it, light cycles random-walk along the tile lines.
@@ -247,5 +247,5 @@ index 93cbcb7..c6400c6 100644
      gl_FragColor = vec4(col, 1.0) * alpha;
  }
 -- 
-2.55.0
+2.56.0
 

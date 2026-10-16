@@ -1,7 +1,7 @@
 From b886d82db7c3b12a968ab708c791b27bbce9fc35 Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Tue, 6 Oct 2026 23:51:30 -0400
-Subject: [PATCH 10/10] Click effect shaders: tron_cb_cycles, hex, ring, lock,
+Subject: [PATCH 10/11] Click effect shaders: tron_cb_cycles, hex, ring, lock,
  tap
 
 Drawn at the pointer for a moment after a button press. tron_cb_cycles
