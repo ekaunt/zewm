@@ -19,6 +19,7 @@ All new behavior is behind config keys and off by default, except where noted.
 - **Content scales when zoomed out** (`view.scale_content_on_zoom`). Past the given zoom level, windows stop being resized and are drawn smaller instead, so zooming out shows more desktop rather than reflowing apps. `2` keeps upstream reflow up to a 2x2 view and scales beyond it. `True` scales at every zoom level.
 - **Zoom centers on the focused window** for both the `basic_scale` keybindings and the 4-finger swipe, instead of anchoring the top-left corner. Always on.
 - **Zoom remembers the view per level.** Zooming back out returns to the position last used at that zoom level, unless the focused window would be off screen there. Always on.
+- **Zoom keys are Mod+i (in) and Mod+o (out)** in the default config, replacing upstream's Mod+n and Mod+u.
 
 ### Placing and moving windows
 
