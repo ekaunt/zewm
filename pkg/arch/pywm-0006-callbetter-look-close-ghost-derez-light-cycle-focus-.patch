@@ -1,7 +1,7 @@
 From c0716b0d5a98afb2b3baaac10d72cf56ddfcbf23 Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Sat, 3 Oct 2026 02:26:22 -0400
-Subject: [PATCH 06/12] callbetter look: close ghost (derez), light cycle,
+Subject: [PATCH 06/13] callbetter look: close ghost (derez), light cycle,
  focus-parallax grid
 
 - wm_ghost: snapshot a window as its client drops its buffer and keep drawing

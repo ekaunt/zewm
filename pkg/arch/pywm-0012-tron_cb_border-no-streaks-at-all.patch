@@ -1,7 +1,7 @@
 From 691c0a620514ceed81eb10e2371372edb8de83a4 Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Wed, 4 Nov 2026 11:23:55 -0500
-Subject: [PATCH 12/12] tron_cb_border: no streaks at all
+Subject: [PATCH 12/13] tron_cb_border: no streaks at all
 
 Drop the two glowing streaks that circled the border during the focus
 trace. The line still draws in from two points half a lap apart and the
