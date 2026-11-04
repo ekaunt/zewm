@@ -31,6 +31,8 @@ conf_border_ws_switch = configured_value('view.border_ws_switch', 10.)
 
 conf_rules_callback = configured_value('view.rules', lambda view: None)
 conf_floating_min_size = configured_value('view.floating_min_size', True)
+# Size in tiles (w, h) a new tiled view opens with, unless its minimum size needs more
+conf_default_size = configured_value('view.default_size', (1, 1))
 # Zoom level (ws size) past which clients stop reflowing and the compositor scales them down instead.
 # False disables; True == 1 (always scale)
 conf_scale_content_on_zoom = configured_value('view.scale_content_on_zoom', False)
@@ -75,6 +77,9 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
         Animate.__init__(self)
 
         self._rules: dict[str, Any] = {}
+        # title the rules were last evaluated for: popups like Firefox extension
+        # windows map with a generic title and get their real one later
+        self._rules_title: Optional[str] = None
 
         self._ssd: Optional[SSDs] = None
         self._background: Optional[BackgroundBlur] = None
@@ -723,8 +728,9 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
         min_w *= size / ws.width
         min_h *= size / (ws.height - ws_state.top_excluded - ws_state.bottom_excluded)
 
-        w = max(math.ceil(min_w), 1)
-        h = max(math.ceil(min_h), 1)
+        default_w, default_h = conf_default_size()
+        w = max(math.ceil(min_w), int(default_w), 1)
+        h = max(math.ceil(min_h), int(default_h), 1)
 
         reference_state = state
         if state.all_in_overview():
@@ -773,6 +779,7 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
     Init and map
     """
     def _get_rules(self) -> None:
+        self._rules_title = self.title
         try:
             rules = conf_rules_callback()(self)
             if rules is not None:
@@ -881,8 +888,19 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
         return result
 
 
+    def _recheck_rules(self) -> None:
+        """Re-run the rules when the title changed after map; a tiled window whose
+        rules now say float (e.g. 'Extension: (Bitwarden ...)') is floated"""
+        if self.title == self._rules_title or self.panel is not None:
+            return
+        self._get_rules()
+        if self._rules.get('float') and not self.is_float(self.wm.state):
+            logger.info("Floating %s after title change", self)
+            self.wm.float_view(self, self._rules.get('float_size'))
+
     def process(self, up_state: PyWMViewUpstreamState) -> PyWMViewDownstreamState:
         if self._mapped:
+            self._recheck_rules()
             if self._ornament is not None:
                 # the layer surface may have resized (dunst stacking notifications)
                 self._ornament.damage()
@@ -1163,10 +1181,13 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
     Callbacks
     """
     def on_event(self, event: str) -> None:
-        if event == "request_move":
-            if self.up_state is not None and self.up_state.is_floating:
-                self.wm.enter_overlay(
-                    MoveResizeFloatingOverlay(self.wm, self))
+        if event in ("request_move", "request_resize"):
+            # Client-side title bar / border drag: follow the pointer while
+            # the left button is held, drop on release (Layout.on_button)
+            if self.up_state is not None and self.up_state.is_floating and self.wm.overlay is None:
+                self.wm._float_drag_button = 0x110  # BTN_LEFT
+                self.wm.enter_overlay(MoveResizeFloatingOverlay(
+                    self.wm, self, mode="resize" if event == "request_resize" else "move"))
         elif event == "request_fullscreen":
             logger.debug("Client requested fullscreen - following")
             if self.is_focused() and conf_accept_fullscreen_from_views():

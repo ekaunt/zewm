@@ -1692,6 +1692,34 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
 
         view[0].close()
 
+    def float_view(self, view: View, float_size: Optional[tuple[int, int]] = None) -> None:
+        """Turn a tiled view into a floating one (rules re-evaluated after a title change)"""
+        def reducer(
+            state: LayoutState,
+        ) -> tuple[Optional[LayoutState], Optional[LayoutState]]:
+            try:
+                s, ws_state, ws_handle = state.find_view(view)
+                if not s.is_tiled:
+                    return (None, state)
+                ws = [w for w in self.workspaces if w._handle == ws_handle][0]
+                s1, s2 = view.toggle_floating(s, ws, ws_state)
+                if float_size is not None:
+                    s2 = s2.copy(float_size=(int(float_size[0]), int(float_size[1])))
+
+                ws_state1 = ws_state.with_view_state(view, **s1.__dict__)
+                ws_state2 = ws_state.replacing_view_state(view, **s2.__dict__)
+                ws_state2.validate_stack_indices(view)
+
+                return (
+                    state.setting_workspace_state(ws, ws_state1),
+                    state.setting_workspace_state(ws, ws_state2),
+                )
+            except Exception:
+                logger.exception("float_view")
+                return (None, state)
+
+        self.animate_to(reducer, conf_anim_t())
+
     def toggle_focused_view_floating(self) -> None:
         def reducer(
             state: LayoutState,
