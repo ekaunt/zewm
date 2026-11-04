@@ -1125,6 +1125,10 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         logger.debug("Overlay destroyed")
         self.thread.on_overlay_destroyed()
         self.overlay = None
+        # a drop hint only makes sense while a drag overlay is up; never leave it behind
+        if self.drop_hint is not None:
+            self.drop_hint = None
+            self.damage()
 
         logger.debug("Resetting gesture")
         self.reset_gesture()

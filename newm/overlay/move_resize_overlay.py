@@ -47,6 +47,10 @@ def _drag_anim_t() -> float:
 conf_c_scale = configured_value('gestures.c.scale_px', 800.)
 
 class _Overlay:
+    # set by MoveResizeOverlay._close_inner: the gesture that drove this overlay can
+    # still deliver updates after close(), which must not touch the layout any more
+    closed = False
+
     def reset_gesture(self) -> None:
         pass
 
@@ -103,6 +107,8 @@ class MoveOverlay(_Overlay):
         self.last_dy = 0
 
     def on_gesture(self, values: dict[str, float]) -> None:
+        if self.closed:
+            return
         if self._closed:
             return
 
@@ -216,6 +222,8 @@ class ResizeOverlay(_Overlay):
         self._closed = False
 
     def on_gesture(self, values: dict[str, float]) -> None:
+        if self.closed:
+            return
         if self._closed:
             return
 
@@ -336,6 +344,8 @@ class CursorMoveOverlay(_Overlay):
         self.last = (0., 0.)
 
     def on_gesture(self, values: dict[str, float]) -> None:
+        if self.closed:
+            return
         self.last = values['delta_x'] * conf_c_scale(), values['delta_y'] * conf_c_scale()
 
         ws = self.workspace
@@ -635,6 +645,7 @@ class MoveResizeOverlay(Overlay, Thread):
         if self.overlay is not None:
             ovr = self.overlay
             ws, ii, ij, iw, ih, fi, fj, fw, fh, t = ovr.close()
+            ovr.closed = True
             self.overlay = None
             if isinstance(ovr, CursorMoveOverlay):
                 self._shoves = ovr.shoves
