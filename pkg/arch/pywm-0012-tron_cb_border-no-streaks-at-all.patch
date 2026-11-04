@@ -1,0 +1,83 @@
+From 691c0a620514ceed81eb10e2371372edb8de83a4 Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Wed, 4 Nov 2026 11:23:55 -0500
+Subject: [PATCH 12/12] tron_cb_border: no streaks at all
+
+Drop the two glowing streaks that circled the border during the focus
+trace. The line still draws in from two points half a lap apart and the
+brackets still flicker on; after that the border is static.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../primitive/tron_cb_border/fragment.glsl    | 34 ++++---------------
+ 1 file changed, 6 insertions(+), 28 deletions(-)
+
+diff --git a/src/wm/shaders/primitive/tron_cb_border/fragment.glsl b/src/wm/shaders/primitive/tron_cb_border/fragment.glsl
+index 9722ad5..3f16e2f 100644
+--- a/src/wm/shaders/primitive/tron_cb_border/fragment.glsl
++++ b/src/wm/shaders/primitive/tron_cb_border/fragment.glsl
+@@ -2,10 +2,10 @@ precision highp float;
+ /*
+  * Focus border in the style of callbetter.com panels (.cc, .cc::before):
+  * 1px cyan border, 18px corner brackets, soft outer glow. On focus (a new
+- * window gets focus too) it builds in: two streaks each race half a lap and
+- * draw the border behind them, and the brackets flicker on (tbflick) as a
+- * streak passes them. The streaks then fade out and the border is static:
+- * the compositor only redraws it when its params change.
++ * window gets focus too) it builds in: the line is drawn from two points half
++ * a lap apart (invisible heads racing half a lap each) and the brackets
++ * flicker on (tbflick) as a head passes them. Then the border is static: the
++ * compositor only redraws it when its params change. No streaks.
+  *
+  * 0-3   colour (r, g, b, a)
+  * 4     corner radius of the border line
+@@ -48,16 +48,6 @@ float perimeter_pos(vec2 p, float a, float b, float r){
+     return p.x > 0.0 ? 2.0 * a + lq + (p.y + b) : 4.0 * a + 2.0 * b + 3.0 * lq + (b - p.y);
+ }
+ 
+-/* Brightness of a streak whose head is delta px ahead (delta > 0: behind the head) */
+-vec2 streak(float delta, float perim){
+-    float tail = 0.35 * perim;
+-    float behind = max(delta, 0.0);
+-    float ahead = max(-delta, 0.0);
+-    float body = exp(-3.0 * behind / tail) * (1.0 - smoothstep(tail, 0.5 * perim, behind)) * exp(-ahead / 3.0);
+-    float head = exp(-abs(delta) / 8.0);
+-    return vec2(body, head);
+-}
+-
+ /* tbflick keyframes: 0 0, 9% 1, 12% .15, 18% 1, 24% .4, 30% 1, 42% .75, 50% 1 */
+ float flick(float x){
+     if(x <= 0.0) return 0.0;
+@@ -82,8 +72,8 @@ void main() {
+     float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+     float dist = abs(sd);
+ 
+-    /* Build-in after a focus change or a new window: the streaks start half a lap
+-       behind their spinning positions, race to catch up, and draw the line behind them */
++    /* Build-in after a focus change or a new window: two heads start half a lap
++       behind their rest positions, race to catch up, and draw the line behind them */
+     /* params 7 < 0: no build-in running */
+     float age = params_float[7] < 0.0 ? 1e4 : mod(time - params_float[7] + 3600.0, 3600.0);
+     float T = 0.45;
+@@ -123,18 +113,6 @@ void main() {
+     /* Premultiplied from here on */
+     vec3 pm = col * a;
+ 
+-    /* Two streaks, half a lap apart */
+-    vec2 st1 = streak(mod(hb - s + 0.5 * perim, perim) - 0.5 * perim, perim);
+-    vec2 st2 = streak(mod(hb - s, perim) - 0.5 * perim, perim);
+-    float band = 1.2 * line + 0.6 * exp(-dist / (4.0 * sc));
+-    /* Streaks only during the build-in; gone 0.6 s after it ends */
+-    float keep = 1.0 - smoothstep(T + 0.3, T + 0.9, age);
+-    float s1 = (st1.x + 1.5 * st1.y) * band * keep;
+-    float s2 = (st2.x + 1.5 * st2.y) * band * keep;
+-    vec3 c2 = vec3(params_float[11], params_float[12], params_float[13]);
+-    pm += cy * s1 + c2 * s2 + vec3(0.8) * line * (st1.y + st2.y) * keep;
+-    a = max(a, clamp(0.9 * (s1 + s2), 0.0, 1.0));
+-
+     float A = params_float[3];
+     a = clamp(a * A, 0.0, 1.0);
+     gl_FragColor = vec4(clamp(pm * A, 0.0, 1.0), a) * alpha;
+-- 
+2.56.0
+
