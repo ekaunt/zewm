@@ -805,6 +805,11 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
             logger.exception("In rules callback")
 
     def init(self) -> CustomDownstreamState:
+        if self._initial_state is None and self._holding():
+            # pywm calls init() right at creation: not yet, keep the window unplaced
+            # (process() keeps damaging until the hold ends, then init() runs for real)
+            self.damage()
+            return CustomDownstreamState()
         if self._initial_state is None:
             logger.info("Init: %s", self)
             self._get_rules()
@@ -939,9 +944,6 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
             return self._process(self.reducer(up_state, self.wm.state))
 
         self.damage()
-
-        if self._initial_state is None and self._holding():
-            return CustomDownstreamState()
 
         _, kind = self._initial_state, self._initial_kind
         self.init()
