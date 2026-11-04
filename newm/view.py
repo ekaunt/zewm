@@ -31,6 +31,11 @@ conf_border_ws_switch = configured_value('view.border_ws_switch', 10.)
 
 conf_rules_callback = configured_value('view.rules', lambda view: None)
 conf_floating_min_size = configured_value('view.floating_min_size', True)
+# Apps whose toplevels send their parent / real title only after the first commit
+# (Firefox): hold placement until one arrives, at most 'timeout' s, so dialogs and
+# popups never flash as tiled and then jump
+conf_hold_apps = configured_value('view.hold.apps', cast(list[str], []))
+conf_hold_timeout = configured_value('view.hold.timeout', 0.3)
 # Size in tiles (w, h) a new tiled view opens with, unless its minimum size needs more
 conf_default_size = configured_value('view.default_size', (1, 1))
 # Zoom level (ws size) past which clients stop reflowing and the compositor scales them down instead.
@@ -81,6 +86,9 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
         # windows map with a generic title and get their real one later
         self._rules_title: Optional[str] = None
         self._rules_parent: Optional[View] = None
+        # placement hold (see conf_hold_apps): start time, title seen then; -1 = no hold
+        self._hold_start: Optional[float] = None
+        self._hold_title: Optional[str] = None
 
         self._ssd: Optional[SSDs] = None
         self._background: Optional[BackgroundBlur] = None
@@ -901,6 +909,27 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
             logger.info("Floating %s after title/parent change", self)
             self.wm.float_view(self, self._rules.get('float_size'))
 
+    def _holding(self) -> bool:
+        """True while placement of this new toplevel should wait for its parent / title"""
+        if self._hold_start is None:
+            self._hold_start = -1.
+            if self.panel is None and self.role == "toplevel" and \
+                    (self.app_id or "").lower() in [a.lower() for a in conf_hold_apps()]:
+                self._hold_start = time.time()
+                self._hold_title = self.title
+                logger.debug("Holding placement of %s", self)
+        if self._hold_start < 0:
+            return False
+        if self.parent is not None or self.title != self._hold_title:
+            logger.debug("Hold over for %s: parent=%s title=%s", self, self.parent, self.title)
+            self._hold_start = -1.
+            return False
+        if time.time() - self._hold_start < conf_hold_timeout():
+            return True
+        logger.debug("Hold timed out for %s", self)
+        self._hold_start = -1.
+        return False
+
     def process(self, up_state: PyWMViewUpstreamState) -> PyWMViewDownstreamState:
         if self._mapped:
             self._recheck_rules()
@@ -910,6 +939,9 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
             return self._process(self.reducer(up_state, self.wm.state))
 
         self.damage()
+
+        if self._initial_state is None and self._holding():
+            return CustomDownstreamState()
 
         _, kind = self._initial_state, self._initial_kind
         self.init()
