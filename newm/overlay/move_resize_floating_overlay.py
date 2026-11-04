@@ -68,10 +68,20 @@ class MoveResizeFloatingOverlay(Overlay):
             except Exception:
                 logger.warn("Unexpected: Could not access view %s box", self.view)
 
+        # started by a Super+button press (or a client move request)? Then the
+        # drag ends with that button, and it may already have been released
+        # before this overlay got started (quick click): see post_init
+        self._button_drag = self.layout._float_drag_button is not None
+
         self._motion_mode = True
         self._gesture_mode = False
         self._gesture_last_dx = 0.
         self._gesture_last_dy = 0.
+
+    def post_init(self) -> None:
+        if self._button_drag and self.layout._float_drag_button is None:
+            logger.debug("MoveResizeFloatingOverlay: button released before start, exiting")
+            self.layout.exit_overlay()
 
     def move(self, dx: float, dy: float) -> None:
         self.i += dx * self.ws_state.size
