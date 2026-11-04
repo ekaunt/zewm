@@ -80,6 +80,7 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
         # title the rules were last evaluated for: popups like Firefox extension
         # windows map with a generic title and get their real one later
         self._rules_title: Optional[str] = None
+        self._rules_parent: Optional[View] = None
 
         self._ssd: Optional[SSDs] = None
         self._background: Optional[BackgroundBlur] = None
@@ -780,6 +781,7 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
     """
     def _get_rules(self) -> None:
         self._rules_title = self.title
+        self._rules_parent = self.parent
         try:
             rules = conf_rules_callback()(self)
             if rules is not None:
@@ -891,11 +893,12 @@ class View(PyWMView[Layout], Animate[PyWMViewDownstreamState], Animatable):
     def _recheck_rules(self) -> None:
         """Re-run the rules when the title changed after map; a tiled window whose
         rules now say float (e.g. 'Extension: (Bitwarden ...)') is floated"""
-        if self.title == self._rules_title or self.panel is not None:
+        if self.panel is not None or (self.title == self._rules_title and self.parent is self._rules_parent):
             return
         self._get_rules()
-        if self._rules.get('float') and not self.is_float(self.wm.state):
-            logger.info("Floating %s after title change", self)
+        # a parent that arrived after map makes it a dialog: float, like _decide_floating would have
+        if (self._rules.get('float') or self.parent is not None) and not self.is_float(self.wm.state):
+            logger.info("Floating %s after title/parent change", self)
             self.wm.float_view(self, self._rules.get('float_size'))
 
     def process(self, up_state: PyWMViewUpstreamState) -> PyWMViewDownstreamState:
