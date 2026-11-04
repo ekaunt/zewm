@@ -1005,10 +1005,10 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
 
                 ovr: Optional[Overlay] = None
                 if view is not None and view.is_float(self.state):
-                    ovr = MoveResizeFloatingOverlay(self, view)
-                    ovr.on_gesture(gesture)
-                    self.enter_overlay(ovr)
-                    return True
+                    # Floating windows move/resize ONLY by Super + button drag on the
+                    # window itself (Layout.on_button, bspwm pointer actions): no
+                    # Super + pointer motion, no two-finger gesture
+                    return False
 
                 elif view is not None and view.is_tiled(self.state):
                     ovr = MoveResizeOverlay(self, view)
