@@ -760,6 +760,8 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             _, place_i, place_j = self.preselect
             self.preselect = None
             self.damage()
+            if isinstance(self.overlay, PreselectOverlay):
+                self.exit_overlay()
             logger.debug("Using preselected placement at %d, %d", place_i, place_j)
             return place_i, place_j
 
@@ -1564,20 +1566,14 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         timer.start()
 
     def enter_preselect(self) -> None:
-        """Super+a: the free tile under the cursor becomes where the next window opens.
-        No overlay, no confirmation. Again on that tile, or over a window, clears it."""
-        ws = self.get_active_workspace()
-        ws_state = self.state.get_workspace_state(ws)
-        x, y = self.cursor_pos
-        h = max(ws.height - ws_state.top_excluded - ws_state.bottom_excluded, 1)
-        i = math.floor(ws_state.i + (x - ws.pos_x) * ws_state.size / ws.width)
-        j = math.floor(ws_state.j + (y - ws.pos_y - ws_state.top_excluded) * ws_state.size / h)
-        hovered = (ws._handle, i, j)
-        if self.preselect == hovered or not ws_state.is_tile_free(i, j):
+        """Super+a: pick where the next window opens. Hovering a free tile moves the red
+        box; a Super binding (Super+Enter) or an opening window takes it and clears the
+        box; Super+a again (or Escape) clears it."""
+        if self.preselect is not None and self.preselect[0] == self.get_active_workspace()._handle:
             self.preselect = None
-        else:
-            self.preselect = hovered
-        self.damage()
+            self.damage()
+            return
+        self.enter_overlay(PreselectOverlay(self))
 
     def basic_scale(self, delta_s: int) -> None:
         ws = self.get_active_workspace()

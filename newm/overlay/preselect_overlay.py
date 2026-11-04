@@ -25,8 +25,9 @@ CANCEL = ('Escape', 'a')
 
 class PreselectOverlay(Overlay):
     """
-    Pick the free tile where the next new window opens: hjkl/arrows jump to the next free tile, mouse hovers free tiles,
-    Return/Space/click confirm, Escape or A clears the preselection.
+    Pick the free tile where the next new window opens: the mouse hovers free tiles, hjkl/arrows jump to the next one.
+    Super+<binding> (Super+Enter) leaves the picker and runs the binding, the window takes the tile. Return/Space/click
+    leave the picker with the tile kept for the next window. Escape or Super+a clears the preselection.
     """
     def __init__(self, layout: Layout) -> None:
         super().__init__(layout)
@@ -70,6 +71,16 @@ class PreselectOverlay(Overlay):
     def on_key(self, time_msec: int, keycode: int, state: int, keysyms: str) -> bool:
         if state != PYWM_PRESSED:
             return True
+        if keysyms in CANCEL:
+            self.layout.preselect = None
+            self.layout.damage()
+            self.layout.exit_overlay()
+            return True
+        if self.layout.modifiers.has('L'):
+            # Super+<key> (Super+Enter: terminal): leave the picker, keep the tile, and let
+            # the binding run in the same press; the new window takes the tile
+            self.layout.exit_overlay()
+            return False
         if keysyms in MOVES:
             _, i, j = self.layout.preselect  # type: ignore
             di, dj = MOVES[keysyms]
@@ -78,10 +89,6 @@ class PreselectOverlay(Overlay):
                     self._set(i + step * di, j + step * dj)
                     break
         elif keysyms in CONFIRM:
-            self.layout.exit_overlay()
-        elif keysyms in CANCEL:
-            self.layout.preselect = None
-            self.layout.damage()
             self.layout.exit_overlay()
         return True
 
