@@ -208,10 +208,12 @@ class MoveResizeFloatingOverlay(Overlay):
         return False
 
     def on_gesture(self, gesture: Gesture) -> bool:
-        # A Super+mouse-button drag owns this overlay: a touchpad finger
-        # gesture during it must not switch a resize into a move
+        # A Super+button drag owns this overlay and is driven by on_motion. Decline
+        # the touchpad gesture (return False): accepting it makes the gesture
+        # provider capture all pointer motion, pywm then reverts every cursor move
+        # and the pointer freezes in the window
         if self._motion_mode and self.layout._float_drag_button is not None:
-            return True
+            return False
         if gesture.kind == conf_gesture_binding_move_resize()[2]:
             logger.debug("MoveResizeFloatingOverlay: New TwoFingerSwipePinch")
 
