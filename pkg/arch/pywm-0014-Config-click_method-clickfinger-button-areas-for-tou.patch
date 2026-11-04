@@ -1,0 +1,75 @@
+From fe4a1e342f0b9e49cb14de5e6152b7b70bad45e4 Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Wed, 4 Nov 2026 12:57:04 -0500
+Subject: [PATCH 14/14] Config: click_method ('clickfinger' | 'button-areas')
+ for touchpads
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ include/wm/wm_config.h | 3 +++
+ src/py/_pywmmodule.c   | 4 ++++
+ src/wm/wm_config.c     | 1 +
+ src/wm/wm_pointer.c    | 7 +++++++
+ 4 files changed, 15 insertions(+)
+
+diff --git a/include/wm/wm_config.h b/include/wm/wm_config.h
+index e51e308..4647896 100644
+--- a/include/wm/wm_config.h
++++ b/include/wm/wm_config.h
+@@ -58,6 +58,9 @@ struct wm_config {
+     int encourage_csd;
+ 
+     bool tap_to_click;
++    /* touchpad click method: 0 = leave libinput's default, 1 = clickfinger (2 fingers =
++     * right, 3 = middle), 2 = button-areas */
++    int click_method;
+     bool natural_scroll;
+ 
+     bool debug;
+diff --git a/src/py/_pywmmodule.c b/src/py/_pywmmodule.c
+index cae62b1..3f666de 100644
+--- a/src/py/_pywmmodule.c
++++ b/src/py/_pywmmodule.c
+@@ -73,6 +73,10 @@ static void set_config(struct wm_config* conf, PyObject* dict, int reconfigure){
+     o = PyDict_GetItemString(dict, "encourage_csd"); if(o){ conf->encourage_csd = o == Py_True; }
+ 
+     o = PyDict_GetItemString(dict, "tap_to_click"); if(o){ conf->tap_to_click = o == Py_True; }
++    o = PyDict_GetItemString(dict, "click_method"); if(o && PyUnicode_Check(o)){
++        const char* m = PyUnicode_AsUTF8(o);
++        conf->click_method = !strcmp(m, "clickfinger") ? 1 : (!strcmp(m, "button-areas") ? 2 : 0);
++    }
+     o = PyDict_GetItemString(dict, "natural_scroll"); if(o){ conf->natural_scroll = o == Py_True; }
+ 
+     o = PyDict_GetItemString(dict, "enable_xwayland"); if(o){ conf->enable_xwayland = o == Py_True; }
+diff --git a/src/wm/wm_config.c b/src/wm/wm_config.c
+index 1cc9d3b..2ba8bc5 100644
+--- a/src/wm/wm_config.c
++++ b/src/wm/wm_config.c
+@@ -50,6 +50,7 @@ void wm_config_init_default(struct wm_config *config) {
+ 
+     config->natural_scroll = true;
+     config->tap_to_click = true;
++    config->click_method = 0;
+ 
+     config->focus_follows_mouse = true;
+     config->constrain_popups_to_toplevel = false;
+diff --git a/src/wm/wm_pointer.c b/src/wm/wm_pointer.c
+index 1a00efa..b0ae717 100644
+--- a/src/wm/wm_pointer.c
++++ b/src/wm/wm_pointer.c
+@@ -43,5 +43,12 @@ void wm_pointer_reconfigure(struct wm_pointer* pointer){
+             libinput_device_config_scroll_set_natural_scroll_enabled(device, pointer->wm_seat->wm_server->wm_config->natural_scroll);
+         }
+         libinput_device_config_tap_set_enabled(device, pointer->wm_seat->wm_server->wm_config->tap_to_click);
++        int cm = pointer->wm_seat->wm_server->wm_config->click_method;
++        if(cm){
++            enum libinput_config_click_method m = cm == 1 ? LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER : LIBINPUT_CONFIG_CLICK_METHOD_BUTTON_AREAS;
++            if(libinput_device_config_click_get_methods(device) & m){
++                libinput_device_config_click_set_method(device, m);
++            }
++        }
+     }
+ }
+-- 
+2.56.0
+

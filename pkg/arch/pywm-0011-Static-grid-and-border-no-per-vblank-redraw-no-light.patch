@@ -1,7 +1,7 @@
 From 681feffa70551b4f30357f69ec8932d0be354485 Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Fri, 16 Oct 2026 18:24:43 -0400
-Subject: [PATCH 11/13] Static grid and border: no per-vblank redraw, no light
+Subject: [PATCH 11/14] Static grid and border: no per-vblank redraw, no light
  cycles
 
 tron_cb_grid and tron_cb_border were rescheduled every vblank forever, which
