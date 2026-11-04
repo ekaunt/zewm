@@ -916,20 +916,18 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
         if state == PYWM_PRESSED and self.overlay is None and \
                 button in (BTN_LEFT, BTN_RIGHT) and \
                 self.modifiers.has(conf_gesture_binding_move_resize()[0]):
+            # bspwm pointer_action1/3: act on the floating window under the pointer,
+            # focused or not (focus_follows_pointer focuses it)
+            view = self.floating_view_at(*self.cursor_pos)
+            if view is not None:
+                if not view.is_focused():
+                    view.focus()
+                self._float_drag_button = button
+                self.enter_overlay(MoveResizeFloatingOverlay(
+                    self, view, mode="resize" if button == BTN_RIGHT else "move"))
+                return True
             view = self.find_focused_view()
-            if view is not None and view.is_float(self.state) and view.up_state is not None:
-                try:
-                    x, y, w, h = view.reducer(view.up_state, self.state).logical_box
-                    cx, cy = self.cursor_pos
-                    under = x <= cx < x + w and y <= cy < y + h
-                except Exception:
-                    under = False
-                if under:
-                    self._float_drag_button = button
-                    self.enter_overlay(MoveResizeFloatingOverlay(
-                        self, view, mode="resize" if button == BTN_RIGHT else "move"))
-                    return True
-            elif button == BTN_LEFT and view is not None and view.is_tiled(self.state):
+            if button == BTN_LEFT and view is not None and view.is_tiled(self.state):
                 # The drag itself starts from the move gesture, now that the
                 # button is held; keep the click from the client
                 self._tiled_drag_click = True
@@ -1346,6 +1344,24 @@ class Layout(PyWM[View], Animate[PyWMDownstreamState], Animatable):
             for _, v in self._views.items()
             if not v.is_panel() and self.is_view_on_workspace(v, workspace)
         ]
+
+    def floating_view_at(self, x: float, y: float) -> Optional[View]:
+        """Topmost mapped floating toplevel under (x, y), if any"""
+        best: Optional[View] = None
+        best_z = 0
+        for view in list(self._views.values()):
+            if view.panel is not None or view.up_state is None or not view.up_state.is_mapped:
+                continue
+            try:
+                if view.role != "toplevel" or not view.is_float(self.state):
+                    continue
+                down = view.reducer(view.up_state, self.state)
+                bx, by, bw, bh = down.logical_box
+                if bx <= x < bx + bw and by <= y < by + bh and (best is None or down.z_index > best_z):
+                    best, best_z = view, down.z_index
+            except Exception:
+                continue
+        return best
 
     def find_focused_view(self) -> Optional[View]:
         for _, view in self._views.items():

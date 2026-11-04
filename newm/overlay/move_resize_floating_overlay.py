@@ -37,8 +37,8 @@ class MoveResizeFloatingOverlay(Overlay):
         super().__init__(layout)
         self.mode = mode
 
-
-        self.layout.update_cursor(False)
+        # bspwm semantics: the pointer stays visible and the window follows the
+        # pointer's absolute position, so it stops when the pointer hits the edge
         self._cursor = self.layout.cursor_pos
 
         self.view = view
@@ -52,13 +52,8 @@ class MoveResizeFloatingOverlay(Overlay):
             self.workspace = [w for w in self.layout.workspaces if w._handle == ws_handle][0]
             self.i, self.j = state.float_pos
             self.w, self.h = state.float_size
-
-            self.layout.update(
-                self.layout.state.setting_workspace_state(
-                    self.workspace, self.ws_state.replacing_view_state(
-                        self.view,
-                        scale_origin=(self.w, self.h)
-                    )))
+            # no scale_origin: the client is resized live during the drag (bspwm),
+            # not stretched and configured once at the end
         except Exception:
             logger.warn("Unexpected: Could not access view %s state", self.view)
 
@@ -185,10 +180,14 @@ class MoveResizeFloatingOverlay(Overlay):
 
     def on_motion(self, time_msec: int, delta_x: float, delta_y: float) -> bool:
         if self._motion_mode:
+            # use where the pointer actually is (clamped to the outputs), not the raw delta
+            cx, cy = self.layout.cursor_pos
+            dx, dy = cx - self._cursor[0], cy - self._cursor[1]
             if self.mode == "resize":
-                self.resize_corner(delta_x / self.workspace.width, delta_y / self.workspace.height)
+                self.resize_corner(dx / self.workspace.width, dy / self.workspace.height)
             else:
-                self.move(delta_x / self.workspace.width, delta_y / self.workspace.height)
+                self.move(dx / self.workspace.width, dy / self.workspace.height)
+            self._cursor = (cx, cy)
         return False
 
     def on_button(self, time_msec: int, button: int, state: int) -> bool:
@@ -237,13 +236,6 @@ class MoveResizeFloatingOverlay(Overlay):
         return False
 
 
-    def _exit_transition(self) -> tuple[Optional[LayoutState], float]:
-        self.layout.update_cursor(True, (int(self._cursor[0]), int(self._cursor[1])))
-        try:
-            state = self.layout.state.copy()
-            state.update_view_state(self.view, scale_origin=None)
-            state.constrain()
-            return state, conf_anim_t()
-        except Exception:
-            logger.warn("Unexpected: Error accessing view %s state", self.view)
-            return None, 0
+    def _exit_transition(self) -> tuple[Optional[LayoutState], Optional[float]]:
+        # the window stays exactly where it was dropped, no settle animation (bspwm)
+        return None, None
