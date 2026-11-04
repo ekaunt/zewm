@@ -1,7 +1,7 @@
 From 62684f30813840a2fdabbfa96f359612ce8e3748 Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Tue, 29 Sep 2026 19:38:31 -0400
-Subject: [PATCH 04/14] tron_grid: four denser parallax layers with motion blur
+Subject: [PATCH 04/15] tron_grid: four denser parallax layers with motion blur
 
 Layers follow a smoothed camera passed from Python (glide), so they keep
 sliding after a fast move; motion blur along the camera velocity.

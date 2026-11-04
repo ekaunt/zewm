@@ -1,7 +1,7 @@
 From fe4a1e342f0b9e49cb14de5e6152b7b70bad45e4 Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Wed, 4 Nov 2026 12:57:04 -0500
-Subject: [PATCH 14/14] Config: click_method ('clickfinger' | 'button-areas')
+Subject: [PATCH 14/15] Config: click_method ('clickfinger' | 'button-areas')
  for touchpads
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>

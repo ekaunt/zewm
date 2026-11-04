@@ -1,7 +1,7 @@
 From 1ba80db215a5b3a857d715e44cb3b51c0b252fdd Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Wed, 30 Sep 2026 02:31:16 -0400
-Subject: [PATCH 05/14] callbetter.com look: tron_cb_grid, tron_cb_border, cb
+Subject: [PATCH 05/15] callbetter.com look: tron_cb_grid, tron_cb_border, cb
  wipe
 
 Port of the callbetter.com landing page (public/lp.html): starfield and

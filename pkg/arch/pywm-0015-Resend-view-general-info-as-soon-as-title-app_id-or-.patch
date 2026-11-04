@@ -1,0 +1,114 @@
+From 21b4e0c8d8b51ed9bd1987715c45a6da6d97302d Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Wed, 4 Nov 2026 13:05:55 -0500
+Subject: [PATCH 15/15] Resend view general info as soon as title, app_id or
+ parent change
+
+It was resent every 20th view update only; with widgets no longer
+redrawing every frame that could be seconds, so a Firefox popup's real
+title and parent reached Python long after the window had been tiled.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ include/py/_pywm_view.h |  5 +++++
+ src/py/_pywm_view.c     | 42 +++++++++++++++++++++++++----------------
+ 2 files changed, 31 insertions(+), 16 deletions(-)
+
+diff --git a/include/py/_pywm_view.h b/include/py/_pywm_view.h
+index 82606af..74ec2c7 100644
+--- a/include/py/_pywm_view.h
++++ b/include/py/_pywm_view.h
+@@ -8,6 +8,11 @@ struct _pywm_view {
+     struct wm_view* view;
+ 
+     int update_cnt;
++    /* general info as last sent to Python: resent as soon as any of it changes
++     * (title, app_id, parent arrive after map for e.g. Firefox popups) */
++    char* last_title;
++    char* last_app_id;
++    long last_parent;
+ 
+     struct _pywm_view* next_view;
+ };
+diff --git a/src/py/_pywm_view.c b/src/py/_pywm_view.c
+index defae12..7668c6c 100644
+--- a/src/py/_pywm_view.c
++++ b/src/py/_pywm_view.c
+@@ -1,6 +1,7 @@
+ #include <Python.h>
+ #include <assert.h>
+ #include <stdlib.h>
++#include <string.h>
+ #include <unistd.h>
+ 
+ #include "wm/wm.h"
+@@ -25,6 +26,9 @@ void _pywm_view_init(struct _pywm_view* _view, struct wm_view* view){
+     _view->next_view = NULL;
+ 
+     _view->update_cnt = 0;
++    _view->last_title = NULL;
++    _view->last_app_id = NULL;
++    _view->last_parent = -1;
+ }
+ 
+ 
+@@ -32,27 +36,31 @@ void _pywm_view_update(struct _pywm_view* view){
+ 
+     /* General info */
+     PyObject* args_general = Py_None;
+-    if(++view->update_cnt % 20 == 1){
+-        long parent_handle = 0;
+-        struct wm_view* parent = wm_view_get_parent(view->view);
+-        if(parent){
+-            parent_handle = _pywm_views_get_handle(parent);
+-        }
+-
++    long parent_handle = 0;
++    struct wm_view* parent = wm_view_get_parent(view->view);
++    if(parent){
++        parent_handle = _pywm_views_get_handle(parent);
++    }
++    const char* title;
++    const char* app_id;
++    const char* role;
++    wm_view_get_info(view->view, &title, &app_id, &role);
++    bool changed = parent_handle != view->last_parent
++        || strcmp(title ? title : "", view->last_title ? view->last_title : "")
++        || strcmp(app_id ? app_id : "", view->last_app_id ? view->last_app_id : "");
++
++    view->update_cnt++;
++    if(changed || view->update_cnt % 20 == 1){
+         pid_t pid;
+         uid_t uid;
+         gid_t gid;
+         wm_view_get_credentials(view->view, &pid, &uid, &gid);
+ 
+-        const char* title;
+-        const char* app_id;
+-        const char* role;
+-        wm_view_get_info(view->view, &title, &app_id, &role);
+-
+-        /* If title is not yet there - resend */
+-        if(!title || !strcmp(title, "")){
+-            view->update_cnt--;
+-        }
++        free(view->last_title);
++        free(view->last_app_id);
++        view->last_title = title ? strdup(title) : NULL;
++        view->last_app_id = app_id ? strdup(app_id) : NULL;
++        view->last_parent = parent_handle;
+ 
+ #ifdef WM_HAS_XWAYLAND
+         bool xwayland = wm_view_is_xwayland(view->view);
+@@ -240,6 +248,8 @@ long _pywm_views_remove(struct wm_view* view){
+ 
+     if(remove){
+         long handle = remove->handle;
++        free(remove->last_title);
++        free(remove->last_app_id);
+         free(remove);
+ 
+         return handle;
+-- 
+2.56.0
+
