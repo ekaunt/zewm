@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Callable, Any
+from typing import Optional, Callable, Any
 import logging
 
 from pywm import PyWMModifiers
@@ -87,7 +87,7 @@ class KeyPress:
                 if event.pressed and event.keysyms == self.keysym and \
                         event.modifiers == self.mod:
                     self._ready_to_fire = True
-                    return 0
+                    return 2
 
                 if not event.pressed and event.keysyms == self.keysym and \
                         self._ready_to_fire:
@@ -100,18 +100,27 @@ class KeyPress:
         self._ready_to_fire = False
 
 class KeyBinding:
-    def __init__(self, keys: str, action: Callable[[], Any]) -> None:
+    def __init__(self, keys: str, action: Callable[[], Any],
+                 press_action: Optional[Callable[[], Any]] = None) -> None:
         _keys = keys.strip().split(" ")
         _keys = [k for k in _keys if k != ""]
         self._presses = [KeyPress(k) for k in _keys]
         self._at = 0
 
+        # action fires on release of the last key (as always); press_action,
+        # if given, fires on its press. Together they give push-to-talk style
+        # bindings (sxhkd's "super + z" / "@super + z" pair).
         self._action = action
+        self._press_action = press_action
 
     def process(self, event: KeyEvent, locked: bool) -> int:
         result = self._presses[self._at].process(event, locked)
 
-        if result == 1:
+        if result == 2:
+            if self._at == len(self._presses) - 1 and self._press_action is not None:
+                self._press_action()
+            return 0
+        elif result == 1:
             if self._at == len(self._presses) - 1:
                 self._action()
                 self._at = 0
@@ -139,9 +148,10 @@ class KeyProcessor:
     def clear(self) -> None:
         self.bindings = []
 
-    def register_bindings(self, *bindings: tuple[str, Callable[[], Any]]) -> None:
-        for keys, action in bindings:
-            self.bindings += [KeyBinding(keys, action)]
+    def register_bindings(self, *bindings: tuple[str, Callable[[], Any]] | tuple[str, Callable[[], Any], Callable[[], Any]]) -> None:
+        for b in bindings:
+            # (keys, on_release) or (keys, on_release, on_press)
+            self.bindings += [KeyBinding(*b)]
 
     def on_event(self, event: KeyEvent, locked: bool) -> bool:
         return_True = False
