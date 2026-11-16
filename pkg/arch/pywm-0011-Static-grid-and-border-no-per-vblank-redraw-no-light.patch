@@ -1,7 +1,7 @@
 From 681feffa70551b4f30357f69ec8932d0be354485 Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Fri, 16 Oct 2026 18:24:43 -0400
-Subject: [PATCH 11/15] Static grid and border: no per-vblank redraw, no light
+Subject: [PATCH 11/16] Static grid and border: no per-vblank redraw, no light
  cycles
 
 tron_cb_grid and tron_cb_border were rescheduled every vblank forever, which
@@ -200,5 +200,5 @@ index 51925ca..f29d0b8 100644
  
  void wm_widget_init(struct wm_widget* widget, struct wm_server* server){
 -- 
-2.56.0
+2.56.1
 

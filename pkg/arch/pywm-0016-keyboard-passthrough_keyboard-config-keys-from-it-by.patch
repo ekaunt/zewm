@@ -1,0 +1,116 @@
+From 24c6cda75f99b57059443484964d34d194bfa072 Mon Sep 17 00:00:00 2001
+From: ekaunt <ekaunt@maany.cloud>
+Date: Mon, 16 Nov 2026 13:20:41 -0500
+Subject: [PATCH 16/16] keyboard: passthrough_keyboard config, keys from it
+ bypass bindings
+
+Keys and modifiers from a keyboard whose name contains the configured
+string (default: ydotool's "ydotoold virtual device") skip the Python
+key/modifier callbacks and go straight to the focused client. Injected
+text no longer turns into Super+letter bindings while a push-to-talk
+chord is physically held, and the injected Shift no longer confuses the
+tracked modifier state.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ include/wm/wm_config.h   |  6 ++++++
+ include/wm/wm_keyboard.h |  1 +
+ src/py/_pywmmodule.c     |  4 ++++
+ src/wm/wm_config.c       |  1 +
+ src/wm/wm_keyboard.c     | 10 ++++++++--
+ 5 files changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/include/wm/wm_config.h b/include/wm/wm_config.h
+index 4647896..8fdf4fd 100644
+--- a/include/wm/wm_config.h
++++ b/include/wm/wm_config.h
+@@ -61,6 +61,12 @@ struct wm_config {
+     /* touchpad click method: 0 = leave libinput's default, 1 = clickfinger (2 fingers =
+      * right, 3 = middle), 2 = button-areas */
+     int click_method;
++
++    /* Keyboards whose name contains this string (e.g. ydotool's uinput device)
++     * bypass the Python key/modifier callbacks: their keys never trigger
++     * bindings and go straight to the focused client. Lets text be injected
++     * while a push-to-talk chord is still physically held. Empty = off. */
++    char passthrough_keyboard[64];
+     bool natural_scroll;
+ 
+     bool debug;
+diff --git a/include/wm/wm_keyboard.h b/include/wm/wm_keyboard.h
+index f401afe..42191a4 100644
+--- a/include/wm/wm_keyboard.h
++++ b/include/wm/wm_keyboard.h
+@@ -10,6 +10,7 @@ struct wm_keyboard {
+     struct wm_seat* wm_seat;
+ 
+     struct wlr_input_device* wlr_input_device;
++    bool passthrough;   // see wm_config::passthrough_keyboard
+ 
+     struct wl_listener destroy;
+     struct wl_listener key;
+diff --git a/src/py/_pywmmodule.c b/src/py/_pywmmodule.c
+index 3f666de..1b5c14d 100644
+--- a/src/py/_pywmmodule.c
++++ b/src/py/_pywmmodule.c
+@@ -77,6 +77,10 @@ static void set_config(struct wm_config* conf, PyObject* dict, int reconfigure){
+         const char* m = PyUnicode_AsUTF8(o);
+         conf->click_method = !strcmp(m, "clickfinger") ? 1 : (!strcmp(m, "button-areas") ? 2 : 0);
+     }
++    o = PyDict_GetItemString(dict, "passthrough_keyboard"); if(o && PyUnicode_Check(o)){
++        strncpy(conf->passthrough_keyboard, PyUnicode_AsUTF8(o), sizeof(conf->passthrough_keyboard) - 1);
++        conf->passthrough_keyboard[sizeof(conf->passthrough_keyboard) - 1] = 0;
++    }
+     o = PyDict_GetItemString(dict, "natural_scroll"); if(o){ conf->natural_scroll = o == Py_True; }
+ 
+     o = PyDict_GetItemString(dict, "enable_xwayland"); if(o){ conf->enable_xwayland = o == Py_True; }
+diff --git a/src/wm/wm_config.c b/src/wm/wm_config.c
+index 2ba8bc5..30acac3 100644
+--- a/src/wm/wm_config.c
++++ b/src/wm/wm_config.c
+@@ -51,6 +51,7 @@ void wm_config_init_default(struct wm_config *config) {
+     config->natural_scroll = true;
+     config->tap_to_click = true;
+     config->click_method = 0;
++    strcpy(config->passthrough_keyboard, "ydotoold virtual device");
+ 
+     config->focus_follows_mouse = true;
+     config->constrain_popups_to_toplevel = false;
+diff --git a/src/wm/wm_keyboard.c b/src/wm/wm_keyboard.c
+index 943530f..c3bb910 100644
+--- a/src/wm/wm_keyboard.c
++++ b/src/wm/wm_keyboard.c
+@@ -76,7 +76,7 @@ static void handle_key(struct wl_listener* listener, void* data){
+         }
+     }
+ 
+-    if(wm_callback_key(event, keys)){
++    if(!keyboard->passthrough && wm_callback_key(event, keys)){
+         return;
+     }
+ 
+@@ -86,7 +86,7 @@ static void handle_key(struct wl_listener* listener, void* data){
+ static void handle_modifiers(struct wl_listener* listener, void* data){
+     struct wm_keyboard* keyboard = wl_container_of(listener, keyboard, modifiers);
+ 
+-    if(wm_callback_modifiers(&keyboard->wlr_input_device->keyboard->modifiers)){
++    if(!keyboard->passthrough && wm_callback_modifiers(&keyboard->wlr_input_device->keyboard->modifiers)){
+         return;
+     }
+ 
+@@ -100,6 +100,12 @@ void wm_keyboard_init(struct wm_keyboard* keyboard, struct wm_seat* seat, struct
+     keyboard->wm_seat = seat;
+     keyboard->wlr_input_device = input_device;
+ 
++    const char* pt = seat->wm_server->wm_config->passthrough_keyboard;
++    keyboard->passthrough = pt[0] && input_device->name && strstr(input_device->name, pt) != NULL;
++    if(keyboard->passthrough){
++        wlr_log(WLR_INFO, "Keyboard '%s' bypasses bindings (passthrough_keyboard)", input_device->name);
++    }
++
+     wm_keyboard_reconfigure(keyboard);
+ 
+     /* Handlers */
+-- 
+2.56.1
+

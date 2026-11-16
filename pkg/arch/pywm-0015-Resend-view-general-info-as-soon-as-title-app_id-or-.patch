@@ -1,7 +1,7 @@
 From 21b4e0c8d8b51ed9bd1987715c45a6da6d97302d Mon Sep 17 00:00:00 2001
 From: ekaunt <ekaunt@maany.cloud>
 Date: Wed, 4 Nov 2026 13:05:55 -0500
-Subject: [PATCH 15/15] Resend view general info as soon as title, app_id or
+Subject: [PATCH 15/16] Resend view general info as soon as title, app_id or
  parent change
 
 It was resent every 20th view update only; with widgets no longer
@@ -110,5 +110,5 @@ index defae12..7668c6c 100644
  
          return handle;
 -- 
-2.56.0
+2.56.1
 
